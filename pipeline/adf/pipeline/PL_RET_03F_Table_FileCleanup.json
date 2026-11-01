@@ -1,0 +1,334 @@
+{
+    "name": "PL_RET_03F_Table_FileCleanup",
+    "properties": {
+        "description": "FR-018 / DBR-08: remove the archive files written by a failed or stopped run for one table, then record the result with ret.usp_LogCleanupResult (success: export rows marked REMOVED; failure: orphan-file flag, ERR-EXP-03).",
+        "activities": [
+            {
+                "name": "GMD_TableRootExists",
+                "type": "GetMetadata",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "dataset": {
+                        "referenceName": "DS_RET_ArchiveFolder",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "Container": {
+                                "value": "@pipeline().parameters.ArchiveContainer",
+                                "type": "Expression"
+                            },
+                            "FolderPath": {
+                                "value": "@pipeline().parameters.BlobPath",
+                                "type": "Expression"
+                            }
+                        }
+                    },
+                    "fieldList": [
+                        "exists"
+                    ],
+                    "storeSettings": {
+                        "type": "AzureBlobStorageReadSettings",
+                        "recursive": false,
+                        "enablePartitionDiscovery": false
+                    },
+                    "formatSettings": {
+                        "type": "BinaryReadSettings"
+                    }
+                }
+            },
+            {
+                "name": "IF_TableRootExists",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "GMD_TableRootExists",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@activity('GMD_TableRootExists').output.exists",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "DEL_RunFiles",
+                            "type": "Delete",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.01:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "description": "Deletes only the files written by this RunId for this table: <schema>_<table>_*_<RunId>.parquet under <BlobPath> (all date folders).",
+                            "typeProperties": {
+                                "dataset": {
+                                    "referenceName": "DS_RET_ArchiveFolder",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "Container": {
+                                            "value": "@pipeline().parameters.ArchiveContainer",
+                                            "type": "Expression"
+                                        },
+                                        "FolderPath": {
+                                            "value": "@pipeline().parameters.BlobPath",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                },
+                                "enableLogging": false,
+                                "storeSettings": {
+                                    "type": "AzureBlobStorageReadSettings",
+                                    "recursive": true,
+                                    "wildcardFileName": {
+                                        "value": "@concat(pipeline().parameters.SchemaName, '_', pipeline().parameters.TableName, '_*_', pipeline().parameters.RunId, '.parquet')",
+                                        "type": "Expression"
+                                    },
+                                    "enablePartitionDiscovery": false
+                                }
+                            }
+                        },
+                        {
+                            "name": "LKP_LogCleanup_Succeeded",
+                            "type": "Lookup",
+                            "dependsOn": [
+                                {
+                                    "activity": "DEL_RunFiles",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.00:10:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "AzureSqlSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "Status": {
+                                            "type": "String",
+                                            "value": "SUCCEEDED"
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        },
+                        {
+                            "name": "LKP_LogCleanup_DeleteFailed",
+                            "type": "Lookup",
+                            "dependsOn": [
+                                {
+                                    "activity": "DEL_RunFiles",
+                                    "dependencyConditions": [
+                                        "Failed"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.00:10:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "AzureSqlSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "Status": {
+                                            "type": "String",
+                                            "value": "FAILED"
+                                        },
+                                        "ErrorMessage": {
+                                            "type": "String",
+                                            "value": {
+                                                "value": "@activity('DEL_RunFiles').error.message",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": [
+                        {
+                            "name": "LKP_LogCleanup_NothingToRemove",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.00:10:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "AzureSqlSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "Status": {
+                                            "type": "String",
+                                            "value": "SUCCEEDED"
+                                        },
+                                        "FilesRemoved": {
+                                            "type": "Int32",
+                                            "value": 0
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "LKP_LogCleanup_ListFailed",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "GMD_TableRootExists",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "Status": {
+                                "type": "String",
+                                "value": "FAILED"
+                            },
+                            "ErrorMessage": {
+                                "type": "String",
+                                "value": {
+                                    "value": "@activity('GMD_TableRootExists').error.message",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            }
+        ],
+        "parameters": {
+            "TableLogId": {
+                "type": "string"
+            },
+            "RunId": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "BlobPath": {
+                "type": "string"
+            },
+            "SchemaName": {
+                "type": "string"
+            },
+            "TableName": {
+                "type": "string"
+            }
+        },
+        "variables": {},
+        "folder": {
+            "name": "DWH Retention/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ]
+    }
+}

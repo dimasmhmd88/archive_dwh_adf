@@ -1,0 +1,275 @@
+{
+    "name": "PL_RET_02_DailyRoutine_Master",
+    "properties": {
+        "description": "PL-02 / PRC-03 / FR-012: Daily Routine, scheduled every day 21:00 UTC+7 (BR-18). Selects active tables whose Initial Cut-off Run completed before the run date, from DailyRoutineStartDate (FR-020). RunDate empty = today UTC+7; manual rerun may pass an earlier date (DBR-15). Concurrency 1.",
+        "activities": [
+            {
+                "name": "LKP_StartRun",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''DAILY_ROUTINE'', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', 'NULL', ';')",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "FR-003 / FR-014: run record, run date fixed in UTC+7 (override may only be earlier, DBR-15); idempotent per ADF pipeline run ID. Optional values are passed as NULL when empty."
+            },
+            {
+                "name": "SET_RunId",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_StartRun",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "vRunId",
+                    "value": {
+                        "value": "@string(activity('LKP_StartRun').output.firstRow.RunId)",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "LKP_GetTablesToProcess",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "SET_RunId",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_GetTablesToProcess",
+                        "storedProcedureParameters": {
+                            "RunId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@variables('vRunId')",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                },
+                "description": "FR-004: table selection per process type; ordered by ProcessingOrder (child tables first, DBR-19 / DBR-18)."
+            },
+            {
+                "name": "FE_Tables",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_GetTablesToProcess",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "description": "Sequential (DEC-07). A failed table never blocks the next one.",
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('LKP_GetTablesToProcess').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "EXEC_TableProcess",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RET_03_Table_Process",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "RunId": {
+                                        "value": "@variables('vRunId')",
+                                        "type": "Expression"
+                                    },
+                                    "TableConfigId": {
+                                        "value": "@string(item().TableConfigId)",
+                                        "type": "Expression"
+                                    },
+                                    "ProcessType": "DAILY_ROUTINE",
+                                    "InitialCutoffMethod": {
+                                        "value": "@item().InitialCutoffMethod",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@item().ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@item().BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@item().SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@item().TableName",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "LKP_EndRun",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "FE_Tables",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_EndRun",
+                        "storedProcedureParameters": {
+                            "RunId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@variables('vRunId')",
+                                    "type": "Expression"
+                                }
+                            },
+                            "FailPipelineOnError": {
+                                "type": "Boolean",
+                                "value": true
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "FR-014: closes the run; raises an error (pipeline FAILED) when the run is not SUCCEEDED [REC 8.3]."
+            },
+            {
+                "name": "LKP_EndRun_SelectionFailed",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_GetTablesToProcess",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "@concat('EXEC ret.usp_EndRun @RunId = ', variables('vRunId'), ', @ErrorMessage = ', concat('N''', replace(concat('Table selection failed: ', activity('LKP_GetTablesToProcess').error.message), '''', ''''''), ''''), ', @FailPipelineOnError = 1;')",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            }
+        ],
+        "parameters": {
+            "RunDate": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "TriggeredBy": {
+                "type": "string",
+                "defaultValue": ""
+            }
+        },
+        "variables": {
+            "vRunId": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "folder": {
+            "name": "DWH Retention/Run"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ],
+        "concurrency": 1
+    }
+}

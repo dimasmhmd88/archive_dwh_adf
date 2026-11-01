@@ -1,0 +1,24 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "factoryName": {
+            "value": "<data-factory-name>"
+        },
+        "sqlServerFqdn": {
+            "value": "<sql-server-name>.database.windows.net"
+        },
+        "sqlDatabaseName": {
+            "value": "<dwh-database-name>"
+        },
+        "archiveStorageAccountName": {
+            "value": "<archive-storage-account>"
+        },
+        "integrationRuntimeName": {
+            "value": "AutoResolveIntegrationRuntime"
+        },
+        "dailyRoutineTriggerStartTime": {
+            "value": "2026-12-01T21:00:00"
+        }
+    }
+}

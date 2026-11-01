@@ -1,0 +1,20 @@
+{
+    "name": "DS_RET_SqlDb",
+    "properties": {
+        "description": "Generic dataset for Lookup and Copy activities that call schema ret procedures (no table bound).",
+        "linkedServiceName": {
+            "referenceName": "LS_RET_AzureSqlDb",
+            "type": "LinkedServiceReference"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ],
+        "folder": {
+            "name": "DWH Retention"
+        },
+        "type": "AzureSqlTable",
+        "schema": [],
+        "typeProperties": {}
+    }
+}

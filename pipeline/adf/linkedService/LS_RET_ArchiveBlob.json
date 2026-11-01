@@ -1,0 +1,19 @@
+{
+    "name": "LS_RET_ArchiveBlob",
+    "properties": {
+        "description": "Archive storage account. Authentication: ADF system-assigned managed identity with a container-scoped data role (Storage Blob Data Contributor) on the archive container (SEC-05). INT-02/INT-03.",
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ],
+        "type": "AzureBlobStorage",
+        "typeProperties": {
+            "serviceEndpoint": "https://<archive-storage-account>.blob.core.windows.net/",
+            "accountKind": "StorageV2"
+        },
+        "connectVia": {
+            "referenceName": "AutoResolveIntegrationRuntime",
+            "type": "IntegrationRuntimeReference"
+        }
+    }
+}

@@ -1,0 +1,762 @@
+{
+    "name": "PL_RET_03E_Export_BusinessDates",
+    "properties": {
+        "description": "FR-006 / FR-007 / FR-019 (IC-02, DR-02, RB-06): export every PENDING business date of a table log to Parquet, one Copy activity per date, sequential (DEC-07), each result recorded with ret.usp_LogExportResult.",
+        "activities": [
+            {
+                "name": "LKP_CheckExecutionWindow",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_CheckExecutionWindow",
+                        "storedProcedureParameters": {
+                            "RunId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.RunId",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "FR-019: IC window 21:00-05:00 UTC+7 before the first export (always 1 for the Daily Routine)."
+            },
+            {
+                "name": "IF_OutsideWindowAtStart",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_CheckExecutionWindow",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@not(bool(activity('LKP_CheckExecutionWindow').output.firstRow.IsWithinWindow))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "LKP_FirstPendingDate",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.00:30:00",
+                                "retry": 1,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "AzureSqlSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_GetExportPlan",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "MaxRows": {
+                                            "type": "Int32",
+                                            "value": 1
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        },
+                        {
+                            "name": "LKP_LogExport_StoppedAtStart",
+                            "type": "Lookup",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_FirstPendingDate",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.00:10:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "AzureSqlSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_LogExportResult",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "BusinessDate": {
+                                            "type": "String",
+                                            "value": {
+                                                "value": "@activity('LKP_FirstPendingDate').output.firstRow.BusinessDate",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "ExportStatus": {
+                                            "type": "String",
+                                            "value": "STOPPED"
+                                        },
+                                        "ErrorMessage": {
+                                            "type": "String",
+                                            "value": "Initial Cut-off window end reached before the export started (FR-019)."
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        },
+                        {
+                            "name": "SET_Continue_WindowClosed",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_LogExport_StoppedAtStart",
+                                    "dependencyConditions": [
+                                        "Completed"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vContinue",
+                                "value": "0"
+                            }
+                        },
+                        {
+                            "name": "SET_Cleanup_WindowClosed",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "SET_Continue_WindowClosed",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vCleanup",
+                                "value": "1"
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                }
+            },
+            {
+                "name": "UNT_ExportBusinessDates",
+                "type": "Until",
+                "dependsOn": [
+                    {
+                        "activity": "IF_OutsideWindowAtStart",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "description": "One iteration per business date still PENDING (usp_GetExportPlan with MaxRows = 1). Stops when ContinueExport = 0, no date remains, or an error occurs.",
+                "typeProperties": {
+                    "expression": {
+                        "value": "@not(equals(variables('vContinue'), '1'))",
+                        "type": "Expression"
+                    },
+                    "timeout": "0.12:00:00",
+                    "activities": [
+                        {
+                            "name": "LKP_NextExportDate",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.00:30:00",
+                                "retry": 1,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "AzureSqlSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_GetExportPlan",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "MaxRows": {
+                                            "type": "Int32",
+                                            "value": 1
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        },
+                        {
+                            "name": "IF_HasPendingDate",
+                            "type": "IfCondition",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_NextExportDate",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "expression": {
+                                    "value": "@and(equals(variables('vContinue'), '1'), contains(activity('LKP_NextExportDate').output, 'firstRow'))",
+                                    "type": "Expression"
+                                },
+                                "ifTrueActivities": [
+                                    {
+                                        "name": "SET_ExportStartTime",
+                                        "type": "SetVariable",
+                                        "dependsOn": [],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vExportStartTime",
+                                            "value": {
+                                                "value": "@convertFromUtc(utcNow(), 'SE Asia Standard Time', 'yyyy-MM-dd HH:mm:ss.fff')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "CPY_ExportBusinessDate",
+                                        "type": "Copy",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "SET_ExportStartTime",
+                                                "dependencyConditions": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        ],
+                                        "policy": {
+                                            "timeout": "0.04:00:00",
+                                            "retry": 2,
+                                            "retryIntervalInSeconds": 120,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "userProperties": [],
+                                        "description": "IC-02 / DR-02: rows of one business date -> one Parquet file. Source ret.usp_ExportSourceRows (all columns, ordinal order, no transformation). File name carries the RunId (DBR-07).",
+                                        "inputs": [
+                                            {
+                                                "referenceName": "DS_RET_SqlDb",
+                                                "type": "DatasetReference"
+                                            }
+                                        ],
+                                        "outputs": [
+                                            {
+                                                "referenceName": "DS_RET_ArchiveParquet",
+                                                "type": "DatasetReference",
+                                                "parameters": {
+                                                    "Container": {
+                                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                                        "type": "Expression"
+                                                    },
+                                                    "FolderPath": {
+                                                        "value": "@activity('LKP_NextExportDate').output.firstRow.FolderPath",
+                                                        "type": "Expression"
+                                                    },
+                                                    "FileName": {
+                                                        "value": "@activity('LKP_NextExportDate').output.firstRow.FileName",
+                                                        "type": "Expression"
+                                                    }
+                                                }
+                                            }
+                                        ],
+                                        "typeProperties": {
+                                            "source": {
+                                                "type": "AzureSqlSource",
+                                                "sqlReaderStoredProcedureName": "ret.usp_ExportSourceRows",
+                                                "storedProcedureParameters": {
+                                                    "TableLogId": {
+                                                        "type": "Int64",
+                                                        "value": {
+                                                            "value": "@pipeline().parameters.TableLogId",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "BusinessDate": {
+                                                        "type": "String",
+                                                        "value": {
+                                                            "value": "@activity('LKP_NextExportDate').output.firstRow.BusinessDate",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                },
+                                                "queryTimeout": "04:00:00",
+                                                "partitionOption": "None"
+                                            },
+                                            "sink": {
+                                                "type": "ParquetSink",
+                                                "storeSettings": {
+                                                    "type": "AzureBlobStorageWriteSettings"
+                                                },
+                                                "formatSettings": {
+                                                    "type": "ParquetWriteSettings"
+                                                }
+                                            },
+                                            "enableStaging": false,
+                                            "translator": {
+                                                "type": "TabularTranslator",
+                                                "typeConversion": true,
+                                                "typeConversionSettings": {
+                                                    "allowDataTruncation": false,
+                                                    "treatBooleanAsNumber": false
+                                                }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "LKP_LogExport_Succeeded",
+                                        "type": "Lookup",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "CPY_ExportBusinessDate",
+                                                "dependencyConditions": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        ],
+                                        "policy": {
+                                            "timeout": "0.00:10:00",
+                                            "retry": 2,
+                                            "retryIntervalInSeconds": 30,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "source": {
+                                                "type": "AzureSqlSource",
+                                                "sqlReaderStoredProcedureName": "ret.usp_LogExportResult",
+                                                "storedProcedureParameters": {
+                                                    "TableLogId": {
+                                                        "type": "Int64",
+                                                        "value": {
+                                                            "value": "@pipeline().parameters.TableLogId",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "BusinessDate": {
+                                                        "type": "String",
+                                                        "value": {
+                                                            "value": "@activity('LKP_NextExportDate').output.firstRow.BusinessDate",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "ExportStatus": {
+                                                        "type": "String",
+                                                        "value": "SUCCEEDED"
+                                                    },
+                                                    "RowsRead": {
+                                                        "type": "Int64",
+                                                        "value": {
+                                                            "value": "@activity('CPY_ExportBusinessDate').output.rowsRead",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "RowsWritten": {
+                                                        "type": "Int64",
+                                                        "value": {
+                                                            "value": "@activity('CPY_ExportBusinessDate').output.rowsCopied",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "FilesWritten": {
+                                                        "type": "Int32",
+                                                        "value": {
+                                                            "value": "@activity('CPY_ExportBusinessDate').output.filesWritten",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "ExportStartTime": {
+                                                        "type": "String",
+                                                        "value": {
+                                                            "value": "@variables('vExportStartTime')",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                },
+                                                "queryTimeout": "00:30:00",
+                                                "partitionOption": "None"
+                                            },
+                                            "dataset": {
+                                                "referenceName": "DS_RET_SqlDb",
+                                                "type": "DatasetReference"
+                                            },
+                                            "firstRowOnly": true
+                                        },
+                                        "description": "Records the Copy result; in an IC also checks the window (ERR-WIN-01). Returns ContinueExport, CleanupRequired, RemainingDates."
+                                    },
+                                    {
+                                        "name": "SET_Continue_AfterOk",
+                                        "type": "SetVariable",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "LKP_LogExport_Succeeded",
+                                                "dependencyConditions": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        ],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vContinue",
+                                            "value": {
+                                                "value": "@if(and(bool(activity('LKP_LogExport_Succeeded').output.firstRow.ContinueExport), greater(activity('LKP_LogExport_Succeeded').output.firstRow.RemainingDates, 0)), '1', '0')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "SET_Cleanup_AfterOk",
+                                        "type": "SetVariable",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "SET_Continue_AfterOk",
+                                                "dependencyConditions": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        ],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vCleanup",
+                                            "value": {
+                                                "value": "@if(bool(activity('LKP_LogExport_Succeeded').output.firstRow.CleanupRequired), '1', '0')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "LKP_LogExport_Failed",
+                                        "type": "Lookup",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "CPY_ExportBusinessDate",
+                                                "dependencyConditions": [
+                                                    "Failed"
+                                                ]
+                                            }
+                                        ],
+                                        "policy": {
+                                            "timeout": "0.00:10:00",
+                                            "retry": 2,
+                                            "retryIntervalInSeconds": 30,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "source": {
+                                                "type": "AzureSqlSource",
+                                                "sqlReaderStoredProcedureName": "ret.usp_LogExportResult",
+                                                "storedProcedureParameters": {
+                                                    "TableLogId": {
+                                                        "type": "Int64",
+                                                        "value": {
+                                                            "value": "@pipeline().parameters.TableLogId",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "BusinessDate": {
+                                                        "type": "String",
+                                                        "value": {
+                                                            "value": "@activity('LKP_NextExportDate').output.firstRow.BusinessDate",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "ExportStatus": {
+                                                        "type": "String",
+                                                        "value": "FAILED"
+                                                    },
+                                                    "ExportStartTime": {
+                                                        "type": "String",
+                                                        "value": {
+                                                            "value": "@variables('vExportStartTime')",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "ErrorMessage": {
+                                                        "type": "String",
+                                                        "value": {
+                                                            "value": "@activity('CPY_ExportBusinessDate').error.message",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                },
+                                                "queryTimeout": "00:30:00",
+                                                "partitionOption": "None"
+                                            },
+                                            "dataset": {
+                                                "referenceName": "DS_RET_SqlDb",
+                                                "type": "DatasetReference"
+                                            },
+                                            "firstRowOnly": true
+                                        },
+                                        "description": "ERR-EXP-01: export failed after retries; loop stops, cleanup required."
+                                    },
+                                    {
+                                        "name": "SET_Continue_AfterFail",
+                                        "type": "SetVariable",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "LKP_LogExport_Failed",
+                                                "dependencyConditions": [
+                                                    "Completed"
+                                                ]
+                                            }
+                                        ],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vContinue",
+                                            "value": "0"
+                                        }
+                                    },
+                                    {
+                                        "name": "SET_Cleanup_AfterFail",
+                                        "type": "SetVariable",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "SET_Continue_AfterFail",
+                                                "dependencyConditions": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        ],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vCleanup",
+                                            "value": "1"
+                                        }
+                                    },
+                                    {
+                                        "name": "SET_Continue_LogError",
+                                        "type": "SetVariable",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "LKP_LogExport_Succeeded",
+                                                "dependencyConditions": [
+                                                    "Failed"
+                                                ]
+                                            }
+                                        ],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vContinue",
+                                            "value": "0"
+                                        },
+                                        "description": "Fail-safe: result of a written file could not be recorded; stop and remove this run's files."
+                                    },
+                                    {
+                                        "name": "SET_Cleanup_LogError",
+                                        "type": "SetVariable",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "SET_Continue_LogError",
+                                                "dependencyConditions": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        ],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vCleanup",
+                                            "value": "1"
+                                        }
+                                    }
+                                ],
+                                "ifFalseActivities": [
+                                    {
+                                        "name": "SET_Continue_NoDate",
+                                        "type": "SetVariable",
+                                        "dependsOn": [],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vContinue",
+                                            "value": "0"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "IF_CleanupOnStop",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "UNT_ExportBusinessDates",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@and(pipeline().parameters.CleanupOnStop, equals(variables('vCleanup'), '1'))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_FileCleanup",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RET_03F_Table_FileCleanup",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "TableLogId": {
+                                        "value": "@pipeline().parameters.TableLogId",
+                                        "type": "Expression"
+                                    },
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@pipeline().parameters.SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@pipeline().parameters.TableName",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "Batch-delete path: remove this run's files on export failure or window stop (E2). Rebuild path passes CleanupOnStop = false: usp_TableRebuildAbort runs first (SQL contract)."
+            }
+        ],
+        "parameters": {
+            "RunId": {
+                "type": "string"
+            },
+            "TableLogId": {
+                "type": "string"
+            },
+            "ProcessType": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "BlobPath": {
+                "type": "string"
+            },
+            "SchemaName": {
+                "type": "string"
+            },
+            "TableName": {
+                "type": "string"
+            },
+            "CleanupOnStop": {
+                "type": "bool",
+                "defaultValue": true
+            }
+        },
+        "variables": {
+            "vContinue": {
+                "type": "String",
+                "defaultValue": "1"
+            },
+            "vCleanup": {
+                "type": "String",
+                "defaultValue": "0"
+            },
+            "vExportStartTime": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "folder": {
+            "name": "DWH Retention/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ]
+    }
+}
