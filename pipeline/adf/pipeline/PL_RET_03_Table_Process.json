@@ -1,0 +1,339 @@
+{
+    "name": "PL_RET_03_Table_Process",
+    "properties": {
+        "description": "PL-03 per table (IC-01..IC-05, DR-01..DR-06): usp_BeginTable -> data steps (PL_RET_03A) -> expired archive deletion (PL-04, Daily Routine) -> usp_EndTable (always).",
+        "activities": [
+            {
+                "name": "LKP_BeginTable",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.04:15:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_BeginTable",
+                        "storedProcedureParameters": {
+                            "RunId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.RunId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "TableConfigId": {
+                                "type": "Int32",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableConfigId",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "04:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "FR-002 / FR-016 / FR-017 / FR-023: table log, lock, checks V-01..V-11, gates DBR-18/DBR-19, pending resume. BeginResult PROCEED / SKIPPED / FAILED; CanRunArchiveExpiry."
+            },
+            {
+                "name": "IF_Proceed",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_BeginTable",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@and(equals(activity('LKP_BeginTable').output.firstRow.BeginResult, 'PROCEED'), not(equals(pipeline().parameters.ProcessType, 'VALIDATION')))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_DataSteps",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RET_03A_Table_DataSteps",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "TableConfigId": {
+                                        "value": "@pipeline().parameters.TableConfigId",
+                                        "type": "Expression"
+                                    },
+                                    "TableLogId": {
+                                        "value": "@string(activity('LKP_BeginTable').output.firstRow.TableLogId)",
+                                        "type": "Expression"
+                                    },
+                                    "ProcessType": {
+                                        "value": "@pipeline().parameters.ProcessType",
+                                        "type": "Expression"
+                                    },
+                                    "InitialCutoffMethod": {
+                                        "value": "@pipeline().parameters.InitialCutoffMethod",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@pipeline().parameters.SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@pipeline().parameters.TableName",
+                                        "type": "Expression"
+                                    },
+                                    "PendingResumeTableLogId": {
+                                        "value": "@string(coalesce(activity('LKP_BeginTable').output.firstRow?.PendingResumeTableLogId, ''))",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "name": "SET_ErrDataSteps",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "EXEC_DataSteps",
+                                    "dependencyConditions": [
+                                        "Failed"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vErrDataSteps",
+                                "value": {
+                                    "value": "@activity('EXEC_DataSteps').error.message",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "A VALIDATION run (process type kept in SQL for manual dry validation) stops after the checks of usp_BeginTable."
+            },
+            {
+                "name": "IF_ArchiveExpiry",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "IF_Proceed",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@and(equals(pipeline().parameters.ProcessType, 'DAILY_ROUTINE'), bool(activity('LKP_BeginTable').output.firstRow.CanRunArchiveExpiry))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_ArchiveExpiry",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RET_04_ArchiveExpiry",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "TableLogId": {
+                                        "value": "@string(activity('LKP_BeginTable').output.firstRow.TableLogId)",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveCutoffDate": {
+                                        "value": "@activity('LKP_BeginTable').output.firstRow.ArchiveCutoffDate",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "name": "SET_ErrArchiveExpiry",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "EXEC_ArchiveExpiry",
+                                    "dependencyConditions": [
+                                        "Failed"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vErrArchiveExpiry",
+                                "value": {
+                                    "value": "@activity('EXEC_ArchiveExpiry').error.message",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "DR-05 runs whenever V-05 and V-06 passed, whatever happened earlier (BR-14, PRC-03 E1-E4), also when the header table was skipped by DBR-19."
+            },
+            {
+                "name": "LKP_EndTable",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "IF_ArchiveExpiry",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "@concat('EXEC ret.usp_EndTable @TableLogId = ', string(activity('LKP_BeginTable').output.firstRow.TableLogId), ', @ErrorMessage = ', if(empty(trim(concat(variables('vErrDataSteps'), if(and(not(empty(variables('vErrDataSteps'))), not(empty(variables('vErrArchiveExpiry')))), ' | ', ''), variables('vErrArchiveExpiry')))), 'NULL', concat('N''', replace(trim(concat(variables('vErrDataSteps'), if(and(not(empty(variables('vErrDataSteps'))), not(empty(variables('vErrArchiveExpiry')))), ' | ', ''), variables('vErrArchiveExpiry'))), '''', ''''''), '''')), ';')",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "IC-05 / DR-06 / FR-014: always called; final status, IC status on failure/stop, lock release. An ADF-level error message (if any) is passed as @ErrorMessage, otherwise NULL."
+            },
+            {
+                "name": "IF_TableFailed",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_EndTable",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@contains(createArray('FAILED', 'STOPPED'), activity('LKP_EndTable').output.firstRow.FinalStatus)",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "FAIL_Table",
+                            "type": "Fail",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "message": {
+                                    "value": "@concat(pipeline().parameters.SchemaName, '.', pipeline().parameters.TableName, ' ended ', activity('LKP_EndTable').output.firstRow.FinalStatus, ' (', string(coalesce(activity('LKP_EndTable').output.firstRow?.ErrorCode, 'no code')), '). See ret.RetentionTableLog TableLogId ', string(activity('LKP_BeginTable').output.firstRow.TableLogId), '.')",
+                                    "type": "Expression"
+                                },
+                                "errorCode": "RET-TABLE-FAILED"
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "Makes a failed table visible in ADF monitoring; the master continues with the next table."
+            }
+        ],
+        "parameters": {
+            "RunId": {
+                "type": "string"
+            },
+            "TableConfigId": {
+                "type": "string"
+            },
+            "ProcessType": {
+                "type": "string"
+            },
+            "InitialCutoffMethod": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "BlobPath": {
+                "type": "string"
+            },
+            "SchemaName": {
+                "type": "string"
+            },
+            "TableName": {
+                "type": "string"
+            }
+        },
+        "variables": {
+            "vErrDataSteps": {
+                "type": "String",
+                "defaultValue": ""
+            },
+            "vErrArchiveExpiry": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "folder": {
+            "name": "DWH Retention/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ]
+    }
+}
