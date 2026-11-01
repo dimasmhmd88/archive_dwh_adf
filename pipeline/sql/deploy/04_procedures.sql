@@ -1,6 +1,6 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - schema ret - 04_procedures.sql
-   Part of DWH_Retention_DB_Objects_v0.5.sql (DRAFT - not reviewed, not executed against any database).
+   Part of DWH_Retention_DB_Objects_v0.5.sql, v0.5.1 collation fix (DRAFT - not reviewed, not executed against any database).
    Stored procedures: helpers, main, table rebuild, post-check/expiry/admin, analysis (sections 5-9)
    Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
    ===================================================================================== */
@@ -204,7 +204,7 @@ BEGIN
 
     IF @ErrorMessage IS NULL
     BEGIN
-        SELECT @Bad = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(k.ChildColumn, N' = ', k.ParentColumn, N' (', x.Problem, N')')), N'; ')
+        SELECT @Bad = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(k.ChildColumn, N' = ', k.ParentColumn, N' (', x.Problem, N')')) COLLATE DATABASE_DEFAULT, N'; ')
         FROM ret.RetentionParentKey AS k
         LEFT JOIN sys.columns AS cc ON cc.object_id = @ObjectId          AND cc.name COLLATE DATABASE_DEFAULT = k.ChildColumn
         LEFT JOIN sys.columns AS pc ON pc.object_id = @DateTableObjectId AND pc.name COLLATE DATABASE_DEFAULT = k.ParentColumn
@@ -220,8 +220,8 @@ BEGIN
                       WHEN TYPE_NAME(pc.system_type_id) IN ('decimal', 'numeric') THEN 'DECIMAL'
                       ELSE TYPE_NAME(pc.system_type_id) END
                 THEN CONCAT(N'incompatible types ', TYPE_NAME(cc.system_type_id), N' / ', TYPE_NAME(pc.system_type_id))
-            WHEN ISNULL(cc.collation_name, N'') <> ISNULL(pc.collation_name, N'')
-                THEN CONCAT(N'different collations ', cc.collation_name, N' / ', pc.collation_name)
+            WHEN ISNULL(cc.collation_name COLLATE DATABASE_DEFAULT, N'') <> ISNULL(pc.collation_name COLLATE DATABASE_DEFAULT, N'')
+                THEN CONCAT(N'different collations ', cc.collation_name COLLATE DATABASE_DEFAULT, N' / ', pc.collation_name COLLATE DATABASE_DEFAULT)
             END AS Problem) AS x
         WHERE k.TableConfigId = @TableConfigId
           AND x.Problem IS NOT NULL;
@@ -236,9 +236,9 @@ BEGIN
         RETURN;
     END;
 
-    SELECT @On = STRING_AGG(CONVERT(NVARCHAR(MAX), N'p.' + QUOTENAME(ParentColumn) + N' = t.' + QUOTENAME(ChildColumn)), N' AND ')
+    SELECT @On = STRING_AGG(CONVERT(NVARCHAR(MAX), N'p.' + QUOTENAME(ParentColumn) + N' = t.' + QUOTENAME(ChildColumn)) COLLATE DATABASE_DEFAULT, N' AND ')
                  WITHIN GROUP (ORDER BY KeyOrdinal),
-           @KeyList = STRING_AGG(CONVERT(NVARCHAR(MAX), QUOTENAME(ParentColumn)), N', ') WITHIN GROUP (ORDER BY KeyOrdinal)
+           @KeyList = STRING_AGG(CONVERT(NVARCHAR(MAX), QUOTENAME(ParentColumn)) COLLATE DATABASE_DEFAULT, N', ') WITHIN GROUP (ORDER BY KeyOrdinal)
     FROM ret.RetentionParentKey
     WHERE TableConfigId = @TableConfigId;
 
@@ -512,7 +512,7 @@ BEGIN
         WHERE k.IsKnown = 1 AND k.SkipReason IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM ret.RetentionTableLog AS t WHERE t.RunId = @RunId AND t.TableConfigId = k.TableConfigId);
 
-        SELECT @Unknown = STRING_AGG(CONVERT(NVARCHAR(20), TableConfigId), N', ')
+        SELECT @Unknown = STRING_AGG(CONVERT(NVARCHAR(20), TableConfigId) COLLATE DATABASE_DEFAULT, N', ')
         FROM #Candidate WHERE IsKnown = 0;
 
         IF @IsAutoMode = 1
@@ -714,7 +714,7 @@ BEGIN
         BEGIN
             SELECT @ColTypeName = TYPE_NAME(c.system_type_id), @ColNullable = c.is_nullable
             FROM sys.columns AS c
-            WHERE c.object_id = @DateObjectId AND c.name = @DateCol;
+            WHERE c.object_id = @DateObjectId AND c.name COLLATE DATABASE_DEFAULT = @DateCol;
 
             IF @ColTypeName IS NULL
                 SELECT @ErrCode = 'ERR-CFG-02', @CheckCode = 'V-02',
@@ -748,14 +748,14 @@ BEGIN
         /* ---- V-08 Parquet compatibility of the exported table ---- */
         IF @ErrCode IS NULL
         BEGIN
-            SELECT @BadList = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(QUOTENAME(c.name), N' (', t.name, N')')), N', ')
+            SELECT @BadList = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(QUOTENAME(c.name COLLATE DATABASE_DEFAULT), N' (', t.name COLLATE DATABASE_DEFAULT, N')')) COLLATE DATABASE_DEFAULT, N', ')
             FROM sys.columns AS c
             JOIN sys.types AS t ON t.user_type_id = c.user_type_id
             WHERE c.object_id = @ObjectId
               AND (   TYPE_NAME(c.system_type_id) = 'sql_variant'
                    OR t.is_assembly_type = 1
-                   OR c.name LIKE N'%[ ,;{}()=]%'
-                   OR CHARINDEX(NCHAR(9), c.name) > 0 OR CHARINDEX(NCHAR(10), c.name) > 0 OR CHARINDEX(NCHAR(13), c.name) > 0);
+                   OR c.name COLLATE DATABASE_DEFAULT LIKE N'%[ ,;{}()=]%'
+                   OR CHARINDEX(NCHAR(9), c.name COLLATE DATABASE_DEFAULT) > 0 OR CHARINDEX(NCHAR(10), c.name COLLATE DATABASE_DEFAULT) > 0 OR CHARINDEX(NCHAR(13), c.name COLLATE DATABASE_DEFAULT) > 0);
 
             IF @BadList IS NOT NULL
                 SELECT @ErrCode = 'ERR-CFG-08', @CheckCode = 'V-08',
@@ -1116,7 +1116,7 @@ BEGIN
         ;THROW 50162, @Msg, 1;
     END;
 
-    SELECT @ColList = STRING_AGG(CONVERT(NVARCHAR(MAX), N't.' + QUOTENAME(c.name)), N', ') WITHIN GROUP (ORDER BY c.column_id)
+    SELECT @ColList = STRING_AGG(CONVERT(NVARCHAR(MAX), N't.' + QUOTENAME(c.name COLLATE DATABASE_DEFAULT)), N', ') WITHIN GROUP (ORDER BY c.column_id)
     FROM sys.columns AS c
     WHERE c.object_id = @ObjectId;
 
@@ -1787,9 +1787,9 @@ BEGIN
     END;
 
     /* ---- RB-01 unsupported features ---- */
-    SELECT @Unsupported = STRING_AGG(CONVERT(NVARCHAR(MAX), x.Reason), N'; ')
+    SELECT @Unsupported = STRING_AGG(CONVERT(NVARCHAR(MAX), x.Reason) COLLATE DATABASE_DEFAULT, N'; ')
     FROM (
-        SELECT CONCAT(N'referenced by foreign key ', QUOTENAME(fk.name), N' of ', QUOTENAME(OBJECT_SCHEMA_NAME(fk.parent_object_id)), N'.',
+        SELECT CONCAT(N'referenced by foreign key ', QUOTENAME(fk.name COLLATE DATABASE_DEFAULT), N' of ', QUOTENAME(OBJECT_SCHEMA_NAME(fk.parent_object_id)), N'.',
                       QUOTENAME(OBJECT_NAME(fk.parent_object_id))) AS Reason
         FROM sys.foreign_keys AS fk WHERE fk.referenced_object_id = @ObjectId
         UNION ALL
@@ -1815,30 +1815,30 @@ BEGIN
         SELECT DISTINCT N'partitioned table' FROM sys.indexes AS i JOIN sys.data_spaces AS ds ON ds.data_space_id = i.data_space_id
         WHERE i.object_id = @ObjectId AND ds.type = 'PS'
         UNION ALL
-        SELECT CONCAT(N'rowversion column ', QUOTENAME(c.name)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND TYPE_NAME(c.system_type_id) = 'timestamp'
+        SELECT CONCAT(N'rowversion column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND TYPE_NAME(c.system_type_id) = 'timestamp'
         UNION ALL
-        SELECT CONCAT(N'GENERATED ALWAYS column ', QUOTENAME(c.name)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND c.generated_always_type <> 0
+        SELECT CONCAT(N'GENERATED ALWAYS column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND c.generated_always_type <> 0
         UNION ALL
-        SELECT CONCAT(N'sparse column or column set ', QUOTENAME(c.name)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND (c.is_sparse = 1 OR c.is_column_set = 1)
+        SELECT CONCAT(N'sparse column or column set ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND (c.is_sparse = 1 OR c.is_column_set = 1)
         UNION ALL
-        SELECT CONCAT(N'masked column ', QUOTENAME(c.name)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND c.is_masked = 1
+        SELECT CONCAT(N'masked column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND c.is_masked = 1
         UNION ALL
-        SELECT CONCAT(N'encrypted column ', QUOTENAME(c.name)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND c.encryption_type IS NOT NULL
+        SELECT CONCAT(N'encrypted column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND c.encryption_type IS NOT NULL
         UNION ALL
-        SELECT CONCAT(N'typed xml column ', QUOTENAME(c.name)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND c.xml_collection_id <> 0
+        SELECT CONCAT(N'typed xml column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c WHERE c.object_id = @ObjectId AND c.xml_collection_id <> 0
         UNION ALL
-        SELECT CONCAT(N'index type ', i.type_desc, N' ', QUOTENAME(i.name)) FROM sys.indexes AS i WHERE i.object_id = @ObjectId AND i.type NOT IN (0, 1, 2)
+        SELECT CONCAT(N'index type ', i.type_desc COLLATE DATABASE_DEFAULT, N' ', QUOTENAME(i.name COLLATE DATABASE_DEFAULT)) FROM sys.indexes AS i WHERE i.object_id = @ObjectId AND i.type NOT IN (0, 1, 2)
         UNION ALL
         SELECT N'full-text index' FROM sys.fulltext_indexes AS f WHERE f.object_id = @ObjectId
         UNION ALL
-        SELECT CONCAT(N'trigger without readable definition ', QUOTENAME(tr.name))
+        SELECT CONCAT(N'trigger without readable definition ', QUOTENAME(tr.name COLLATE DATABASE_DEFAULT))
         FROM sys.triggers AS tr LEFT JOIN sys.sql_modules AS m ON m.object_id = tr.object_id
-        WHERE tr.parent_id = @ObjectId AND m.definition IS NULL
+        WHERE tr.parent_id = @ObjectId AND m.definition COLLATE DATABASE_DEFAULT IS NULL
         UNION ALL
-        SELECT CONCAT(N'NOT FOR REPLICATION constraint ', QUOTENAME(ck.name)) FROM sys.check_constraints AS ck
+        SELECT CONCAT(N'NOT FOR REPLICATION constraint ', QUOTENAME(ck.name COLLATE DATABASE_DEFAULT)) FROM sys.check_constraints AS ck
         WHERE ck.parent_object_id = @ObjectId AND ck.is_not_for_replication = 1
         UNION ALL
-        SELECT CONCAT(N'NOT FOR REPLICATION constraint ', QUOTENAME(fk.name)) FROM sys.foreign_keys AS fk
+        SELECT CONCAT(N'NOT FOR REPLICATION constraint ', QUOTENAME(fk.name COLLATE DATABASE_DEFAULT)) FROM sys.foreign_keys AS fk
         WHERE fk.parent_object_id = @ObjectId AND fk.is_not_for_replication = 1
     ) AS x;
 
@@ -1864,15 +1864,15 @@ BEGIN
     END;
 
     /* ---- RB-02 script the column definitions ---- */
-    SELECT @ColDefs = STRING_AGG(CONVERT(NVARCHAR(MAX), d.ColDef), N',' + NCHAR(10) + N'    ') WITHIN GROUP (ORDER BY d.column_id)
+    SELECT @ColDefs = STRING_AGG(CONVERT(NVARCHAR(MAX), d.ColDef) COLLATE DATABASE_DEFAULT, N',' + NCHAR(10) + N'    ') WITHIN GROUP (ORDER BY d.column_id)
     FROM (
         SELECT c.column_id,
-               QUOTENAME(c.name) + N' ' +
+               QUOTENAME(c.name COLLATE DATABASE_DEFAULT) + N' ' +
                CASE WHEN cc.column_id IS NOT NULL
-                    THEN N'AS ' + cc.definition
+                    THEN N'AS ' + cc.definition COLLATE DATABASE_DEFAULT
                          + CASE WHEN cc.is_persisted = 1 THEN N' PERSISTED' + CASE WHEN c.is_nullable = 0 THEN N' NOT NULL' ELSE N'' END ELSE N'' END
                     ELSE ret.fn_ColumnTypeSql(c.user_type_id, c.max_length, c.precision, c.scale)
-                         + CASE WHEN c.collation_name IS NOT NULL AND ty.is_user_defined = 0 THEN N' COLLATE ' + c.collation_name ELSE N'' END
+                         + CASE WHEN c.collation_name COLLATE DATABASE_DEFAULT IS NOT NULL AND ty.is_user_defined = 0 THEN N' COLLATE ' + c.collation_name COLLATE DATABASE_DEFAULT ELSE N'' END
                          + CASE WHEN ic.column_id IS NOT NULL
                                 THEN N' IDENTITY(' + CONVERT(NVARCHAR(40), ic.seed_value) + N', ' + CONVERT(NVARCHAR(40), ic.increment_value) + N')'
                                 ELSE N'' END
@@ -1885,8 +1885,8 @@ BEGIN
         WHERE c.object_id = @ObjectId
     ) AS d;
 
-    SELECT @ColList = STRING_AGG(CONVERT(NVARCHAR(MAX), QUOTENAME(c.name)), N', ') WITHIN GROUP (ORDER BY c.column_id),
-           @SelList = STRING_AGG(CONVERT(NVARCHAR(MAX), N't.' + QUOTENAME(c.name)), N', ') WITHIN GROUP (ORDER BY c.column_id)
+    SELECT @ColList = STRING_AGG(CONVERT(NVARCHAR(MAX), QUOTENAME(c.name COLLATE DATABASE_DEFAULT)), N', ') WITHIN GROUP (ORDER BY c.column_id),
+           @SelList = STRING_AGG(CONVERT(NVARCHAR(MAX), N't.' + QUOTENAME(c.name COLLATE DATABASE_DEFAULT)), N', ') WITHIN GROUP (ORDER BY c.column_id)
     FROM sys.columns AS c
     WHERE c.object_id = @ObjectId AND c.is_computed = 0;
 
@@ -1900,11 +1900,11 @@ BEGIN
     SELECT CASE WHEN i.type = 1 THEN 1 ELSE 2 END,
            CASE WHEN i.is_primary_key = 1 OR i.is_unique_constraint = 1
                 THEN N'ALTER TABLE ' + @NewFull + N' ADD CONSTRAINT ' + QUOTENAME(CONCAT(@Prefix, N'_C', kc.object_id))
-                     + CASE WHEN i.is_primary_key = 1 THEN N' PRIMARY KEY ' ELSE N' UNIQUE ' END + i.type_desc
+                     + CASE WHEN i.is_primary_key = 1 THEN N' PRIMARY KEY ' ELSE N' UNIQUE ' END + i.type_desc COLLATE DATABASE_DEFAULT
                      + N' (' + k.KeyCols + N')' + ISNULL(w.WithSql, N'') + N';'
-                ELSE N'CREATE ' + CASE WHEN i.is_unique = 1 THEN N'UNIQUE ' ELSE N'' END + i.type_desc + N' INDEX '
+                ELSE N'CREATE ' + CASE WHEN i.is_unique = 1 THEN N'UNIQUE ' ELSE N'' END + i.type_desc COLLATE DATABASE_DEFAULT + N' INDEX '
                      + QUOTENAME(CONCAT(@Prefix, N'_I', i.index_id)) + N' ON ' + @NewFull + N' (' + k.KeyCols + N')'
-                     + ISNULL(N' INCLUDE (' + k.IncCols + N')', N'') + ISNULL(N' WHERE ' + i.filter_definition, N'')
+                     + ISNULL(N' INCLUDE (' + k.IncCols + N')', N'') + ISNULL(N' WHERE ' + i.filter_definition COLLATE DATABASE_DEFAULT, N'')
                      + ISNULL(w.WithSql, N'') + N';'
            END
            + CASE WHEN i.is_disabled = 1
@@ -1915,16 +1915,16 @@ BEGIN
     FROM sys.indexes AS i
     LEFT JOIN sys.key_constraints AS kc ON kc.parent_object_id = i.object_id AND kc.unique_index_id = i.index_id
     OUTER APPLY (SELECT STRING_AGG(CASE WHEN ic.key_ordinal > 0
-                                        THEN CONVERT(NVARCHAR(MAX), QUOTENAME(c.name) + CASE WHEN ic.is_descending_key = 1 THEN N' DESC' ELSE N' ASC' END) END, N', ')
+                                        THEN CONVERT(NVARCHAR(MAX), QUOTENAME(c.name COLLATE DATABASE_DEFAULT) + CASE WHEN ic.is_descending_key = 1 THEN N' DESC' ELSE N' ASC' END) END COLLATE DATABASE_DEFAULT, N', ')
                                WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id) AS KeyCols,
-                        STRING_AGG(CASE WHEN ic.is_included_column = 1 THEN CONVERT(NVARCHAR(MAX), QUOTENAME(c.name)) END, N', ')
+                        STRING_AGG(CASE WHEN ic.is_included_column = 1 THEN CONVERT(NVARCHAR(MAX), QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) END, N', ')
                                WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id) AS IncCols
                  FROM sys.index_columns AS ic
                  JOIN sys.columns AS c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                  WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id) AS k
-    OUTER APPLY (SELECT MIN(p.data_compression_desc) AS Compression
+    OUTER APPLY (SELECT MIN(p.data_compression_desc COLLATE DATABASE_DEFAULT) AS Compression
                  FROM sys.partitions AS p WHERE p.object_id = i.object_id AND p.index_id = i.index_id) AS pz
-    OUTER APPLY (SELECT N' WITH (' + STRING_AGG(o.Opt, N', ') + N')' AS WithSql
+    OUTER APPLY (SELECT N' WITH (' + STRING_AGG(o.Opt COLLATE DATABASE_DEFAULT, N', ') + N')' AS WithSql
                  FROM (VALUES (CASE WHEN i.fill_factor > 0 THEN CONCAT(N'FILLFACTOR = ', i.fill_factor) END),
                               (CASE WHEN i.is_padded = 1 THEN N'PAD_INDEX = ON' END),
                               (CASE WHEN i.ignore_dup_key = 1 THEN N'IGNORE_DUP_KEY = ON' END),
@@ -1936,14 +1936,14 @@ BEGIN
 
     -- Heap compression
     INSERT INTO #Ddl (Phase, Sql)
-    SELECT 1, N'ALTER TABLE ' + @NewFull + N' REBUILD WITH (DATA_COMPRESSION = ' + p.data_compression_desc + N');'
+    SELECT 1, N'ALTER TABLE ' + @NewFull + N' REBUILD WITH (DATA_COMPRESSION = ' + p.data_compression_desc COLLATE DATABASE_DEFAULT + N');'
     FROM sys.partitions AS p
-    WHERE p.object_id = @ObjectId AND p.index_id = 0 AND p.partition_number = 1 AND p.data_compression_desc <> N'NONE';
+    WHERE p.object_id = @ObjectId AND p.index_id = 0 AND p.partition_number = 1 AND p.data_compression_desc COLLATE DATABASE_DEFAULT <> N'NONE';
 
     -- Default constraints
     INSERT INTO #Ddl (Phase, Sql)
     SELECT 3, N'ALTER TABLE ' + @NewFull + N' ADD CONSTRAINT ' + QUOTENAME(CONCAT(@Prefix, N'_C', dc.object_id))
-              + N' DEFAULT ' + dc.definition + N' FOR ' + QUOTENAME(c.name) + N';'
+              + N' DEFAULT ' + dc.definition COLLATE DATABASE_DEFAULT + N' FOR ' + QUOTENAME(c.name COLLATE DATABASE_DEFAULT) + N';'
     FROM sys.default_constraints AS dc
     JOIN sys.columns AS c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
     WHERE dc.parent_object_id = @ObjectId;
@@ -1951,7 +1951,7 @@ BEGIN
     -- Check constraints (trusted / not trusted / disabled as in the original)
     INSERT INTO #Ddl (Phase, Sql)
     SELECT 4, N'ALTER TABLE ' + @NewFull + CASE WHEN ck.is_not_trusted = 1 THEN N' WITH NOCHECK' ELSE N' WITH CHECK' END
-              + N' ADD CONSTRAINT ' + QUOTENAME(CONCAT(@Prefix, N'_C', ck.object_id)) + N' CHECK ' + ck.definition + N';'
+              + N' ADD CONSTRAINT ' + QUOTENAME(CONCAT(@Prefix, N'_C', ck.object_id)) + N' CHECK ' + ck.definition COLLATE DATABASE_DEFAULT + N';'
               + CASE WHEN ck.is_disabled = 1
                      THEN NCHAR(10) + N'ALTER TABLE ' + @NewFull + N' NOCHECK CONSTRAINT ' + QUOTENAME(CONCAT(@Prefix, N'_C', ck.object_id)) + N';'
                      ELSE N'' END
@@ -1964,15 +1964,15 @@ BEGIN
               + N' ADD CONSTRAINT ' + QUOTENAME(CONCAT(@Prefix, N'_C', fk.object_id))
               + N' FOREIGN KEY (' + fc.ParentCols + N') REFERENCES '
               + QUOTENAME(OBJECT_SCHEMA_NAME(fk.referenced_object_id)) + N'.' + QUOTENAME(OBJECT_NAME(fk.referenced_object_id))
-              + N' (' + fc.RefCols + N') ON DELETE ' + REPLACE(fk.delete_referential_action_desc, N'_', N' ')
-              + N' ON UPDATE ' + REPLACE(fk.update_referential_action_desc, N'_', N' ') + N';'
+              + N' (' + fc.RefCols + N') ON DELETE ' + REPLACE(fk.delete_referential_action_desc COLLATE DATABASE_DEFAULT, N'_', N' ')
+              + N' ON UPDATE ' + REPLACE(fk.update_referential_action_desc COLLATE DATABASE_DEFAULT, N'_', N' ') + N';'
               + CASE WHEN fk.is_disabled = 1
                      THEN NCHAR(10) + N'ALTER TABLE ' + @NewFull + N' NOCHECK CONSTRAINT ' + QUOTENAME(CONCAT(@Prefix, N'_C', fk.object_id)) + N';'
                      ELSE N'' END
     FROM sys.foreign_keys AS fk
-    OUTER APPLY (SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), QUOTENAME(COL_NAME(x.parent_object_id, x.parent_column_id))), N', ')
+    OUTER APPLY (SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), QUOTENAME(COL_NAME(x.parent_object_id, x.parent_column_id))) COLLATE DATABASE_DEFAULT, N', ')
                                WITHIN GROUP (ORDER BY x.constraint_column_id) AS ParentCols,
-                        STRING_AGG(CONVERT(NVARCHAR(MAX), QUOTENAME(COL_NAME(x.referenced_object_id, x.referenced_column_id))), N', ')
+                        STRING_AGG(CONVERT(NVARCHAR(MAX), QUOTENAME(COL_NAME(x.referenced_object_id, x.referenced_column_id))) COLLATE DATABASE_DEFAULT, N', ')
                                WITHIN GROUP (ORDER BY x.constraint_column_id) AS RefCols
                  FROM sys.foreign_key_columns AS x WHERE x.constraint_object_id = fk.object_id) AS fc
     WHERE fk.parent_object_id = @ObjectId;
@@ -2164,18 +2164,18 @@ BEGIN
 
     CREATE TABLE #Ren (Id INT IDENTITY(1, 1) PRIMARY KEY, Kind VARCHAR(10) NOT NULL, TempName SYSNAME NOT NULL, OrigName SYSNAME NOT NULL);
     INSERT INTO #Ren (Kind, TempName, OrigName)
-    SELECT 'OBJECT', CONCAT(@Prefix, N'_C', o.object_id), o.name
+    SELECT 'OBJECT', CONCAT(@Prefix, N'_C', o.object_id), o.name COLLATE DATABASE_DEFAULT
     FROM sys.objects AS o
     WHERE o.parent_object_id = @ObjectId AND o.type IN ('PK', 'UQ', 'D', 'C', 'F');
     INSERT INTO #Ren (Kind, TempName, OrigName)
-    SELECT 'INDEX', CONCAT(@Prefix, N'_I', i.index_id), i.name
+    SELECT 'INDEX', CONCAT(@Prefix, N'_I', i.index_id), i.name COLLATE DATABASE_DEFAULT
     FROM sys.indexes AS i
     WHERE i.object_id = @ObjectId AND i.index_id > 0 AND i.is_primary_key = 0 AND i.is_unique_constraint = 0;
 
-    SELECT @Missing = STRING_AGG(CONVERT(NVARCHAR(MAX), r.TempName), N', ')
+    SELECT @Missing = STRING_AGG(CONVERT(NVARCHAR(MAX), r.TempName) COLLATE DATABASE_DEFAULT, N', ')
     FROM #Ren AS r
-    WHERE (r.Kind = 'OBJECT' AND NOT EXISTS (SELECT 1 FROM sys.objects AS o WHERE o.parent_object_id = @NewObjectId AND o.name = r.TempName))
-       OR (r.Kind = 'INDEX'  AND NOT EXISTS (SELECT 1 FROM sys.indexes AS i WHERE i.object_id = @NewObjectId AND i.name = r.TempName));
+    WHERE (r.Kind = 'OBJECT' AND NOT EXISTS (SELECT 1 FROM sys.objects AS o WHERE o.parent_object_id = @NewObjectId AND o.name COLLATE DATABASE_DEFAULT = r.TempName))
+       OR (r.Kind = 'INDEX'  AND NOT EXISTS (SELECT 1 FROM sys.indexes AS i WHERE i.object_id = @NewObjectId AND i.name COLLATE DATABASE_DEFAULT = r.TempName));
 
     IF @Missing IS NOT NULL
     BEGIN
@@ -2186,19 +2186,19 @@ BEGIN
 
     CREATE TABLE #Trg (Id INT IDENTITY(1, 1) PRIMARY KEY, Name SYSNAME NOT NULL, Def NVARCHAR(MAX) NOT NULL, IsDisabled BIT NOT NULL);
     INSERT INTO #Trg (Name, Def, IsDisabled)
-    SELECT tr.name, m.definition, tr.is_disabled
+    SELECT tr.name COLLATE DATABASE_DEFAULT, m.definition COLLATE DATABASE_DEFAULT, tr.is_disabled
     FROM sys.triggers AS tr JOIN sys.sql_modules AS m ON m.object_id = tr.object_id
     WHERE tr.parent_id = @ObjectId;
 
     CREATE TABLE #TrgOrder (Id INT IDENTITY(1, 1) PRIMARY KEY, Name SYSNAME NOT NULL, OrderType VARCHAR(10) NOT NULL, EventType NVARCHAR(60) NOT NULL);
     INSERT INTO #TrgOrder (Name, OrderType, EventType)
-    SELECT tr.name, CASE WHEN te.is_first = 1 THEN 'First' ELSE 'Last' END, te.type_desc
+    SELECT tr.name COLLATE DATABASE_DEFAULT, CASE WHEN te.is_first = 1 THEN 'First' ELSE 'Last' END, te.type_desc COLLATE DATABASE_DEFAULT
     FROM sys.trigger_events AS te JOIN sys.triggers AS tr ON tr.object_id = te.object_id
     WHERE tr.parent_id = @ObjectId AND (te.is_first = 1 OR te.is_last = 1);
 
     CREATE TABLE #Perm (Id INT IDENTITY(1, 1) PRIMARY KEY, Sql NVARCHAR(MAX) NOT NULL);
     INSERT INTO #Perm (Sql)
-    SELECT CASE WHEN dp.state = 'W' THEN N'GRANT' ELSE dp.state_desc END + N' ' + dp.permission_name + N' ON ' + @FullName
+    SELECT CASE WHEN dp.state = 'W' THEN N'GRANT' ELSE dp.state_desc COLLATE DATABASE_DEFAULT END + N' ' + dp.permission_name COLLATE DATABASE_DEFAULT + N' ON ' + @FullName
            + ISNULL(N' (' + QUOTENAME(COL_NAME(dp.major_id, NULLIF(dp.minor_id, 0))) + N')', N'')
            + N' TO ' + QUOTENAME(USER_NAME(dp.grantee_principal_id))
            + CASE WHEN dp.state = 'W' THEN N' WITH GRANT OPTION' ELSE N'' END + N';'
@@ -2207,13 +2207,13 @@ BEGIN
 
     CREATE TABLE #Xp (Id INT IDENTITY(1, 1) PRIMARY KEY, Name SYSNAME NOT NULL, Value SQL_VARIANT NULL, ColName SYSNAME NULL);
     INSERT INTO #Xp (Name, Value, ColName)
-    SELECT ep.name, ep.value, COL_NAME(ep.major_id, NULLIF(ep.minor_id, 0))
+    SELECT ep.name COLLATE DATABASE_DEFAULT, ep.value, COL_NAME(ep.major_id, NULLIF(ep.minor_id, 0))
     FROM sys.extended_properties AS ep
     WHERE ep.class = 1 AND ep.major_id = @ObjectId;
 
     CREATE TABLE #Views (Id INT IDENTITY(1, 1) PRIMARY KEY, Name NVARCHAR(300) NOT NULL);
     INSERT INTO #Views (Name)
-    SELECT DISTINCT QUOTENAME(OBJECT_SCHEMA_NAME(v.object_id)) + N'.' + QUOTENAME(v.name)
+    SELECT DISTINCT QUOTENAME(OBJECT_SCHEMA_NAME(v.object_id)) + N'.' + QUOTENAME(v.name COLLATE DATABASE_DEFAULT)
     FROM sys.sql_expression_dependencies AS d JOIN sys.views AS v ON v.object_id = d.referencing_id
     WHERE d.referenced_id = @ObjectId;
 
@@ -2591,7 +2591,7 @@ BEGIN
                END;
     END;
 
-    SELECT @Ignored   = STRING_AGG(CONVERT(NVARCHAR(MAX), ItemName), N', ') FROM #Item WHERE Val IS NULL;
+    SELECT @Ignored   = STRING_AGG(CONVERT(NVARCHAR(MAX), ItemName) COLLATE DATABASE_DEFAULT, N', ') FROM #Item WHERE Val IS NULL;
     SELECT @ToDelete  = COUNT(*) FROM #Item WHERE Action = 'DELETE';
     SELECT @ToDescend = COUNT(*) FROM #Item WHERE Action = 'DESCEND';
 
@@ -3071,7 +3071,7 @@ BEGIN
         ;THROW 50302, N'No active table in the configuration.', 1;
     END;
 
-    SELECT @Pending = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(c.SchemaName, N'.', c.TableName, N' (', s.InitialCutoffStatus, N')')), N', ')
+    SELECT @Pending = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(c.SchemaName, N'.', c.TableName, N' (', s.InitialCutoffStatus, N')')) COLLATE DATABASE_DEFAULT, N', ')
     FROM ret.RetentionConfig AS c
     JOIN ret.RetentionTableStatus AS s ON s.TableConfigId = c.TableConfigId
     WHERE c.IsActive = 1 AND s.InitialCutoffStatus <> 'COMPLETED';
@@ -3114,8 +3114,8 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT s.name AS SchemaName,
-           t.name AS TableName,
+    SELECT s.name COLLATE DATABASE_DEFAULT AS SchemaName,
+           t.name COLLATE DATABASE_DEFAULT AS TableName,
            ps.RowCnt,
            CAST(ps.ReservedPages * 8.0 / 1024 AS DECIMAL(18, 2)) AS ReservedMB,
            dc.DateColumns,
@@ -3128,18 +3128,18 @@ BEGIN
     CROSS APPLY (SELECT SUM(CASE WHEN p.index_id IN (0, 1) THEN p.row_count ELSE 0 END) AS RowCnt,
                         SUM(p.reserved_page_count) AS ReservedPages
                  FROM sys.dm_db_partition_stats AS p WHERE p.object_id = t.object_id) AS ps
-    OUTER APPLY (SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(c.name, N' (', TYPE_NAME(c.system_type_id),
-                                   CASE WHEN c.is_nullable = 1 THEN N', nullable' ELSE N'' END, N')')), N', ')
+    OUTER APPLY (SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(c.name COLLATE DATABASE_DEFAULT, N' (', TYPE_NAME(c.system_type_id),
+                                   CASE WHEN c.is_nullable = 1 THEN N', nullable' ELSE N'' END, N')')) COLLATE DATABASE_DEFAULT, N', ')
                         WITHIN GROUP (ORDER BY c.column_id) AS DateColumns
                  FROM sys.columns AS c
                  WHERE c.object_id = t.object_id
                    AND TYPE_NAME(c.system_type_id) IN ('date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset')) AS dc
     LEFT JOIN ret.RetentionConfig AS cfg
            ON cfg.SchemaName = s.name COLLATE DATABASE_DEFAULT AND cfg.TableName = t.name COLLATE DATABASE_DEFAULT
-    WHERE s.name <> N'ret'
+    WHERE s.name COLLATE DATABASE_DEFAULT <> N'ret'
       AND t.is_ms_shipped = 0
-      AND t.name NOT LIKE N'%[_][_]RBD[_]%'
-      AND (@SchemaName IS NULL OR s.name = @SchemaName)
+      AND t.name COLLATE DATABASE_DEFAULT NOT LIKE N'%[_][_]RBD[_]%'
+      AND (@SchemaName IS NULL OR s.name COLLATE DATABASE_DEFAULT = @SchemaName)
     ORDER BY ps.RowCnt DESC;
 END;
 GO
@@ -3162,13 +3162,13 @@ BEGIN
         ;THROW 50311, N'Table or column not found.', 1;
     END;
 
-    SELECT @SchemaName AS SchemaName, @TableName AS TableName, c.name AS RetentionColumn,
+    SELECT @SchemaName AS SchemaName, @TableName AS TableName, c.name COLLATE DATABASE_DEFAULT AS RetentionColumn,
            TYPE_NAME(c.system_type_id) AS DataType, c.is_nullable AS IsNullable,
            CASE WHEN EXISTS (SELECT 1 FROM sys.index_columns AS ic
                              WHERE ic.object_id = @ObjectId AND ic.column_id = c.column_id AND ic.key_ordinal = 1)
                 THEN 1 ELSE 0 END AS IsLeadingIndexColumn
     FROM sys.columns AS c
-    WHERE c.object_id = @ObjectId AND c.name = @RetentionColumn;
+    WHERE c.object_id = @ObjectId AND c.name COLLATE DATABASE_DEFAULT = @RetentionColumn;
 
     SET @sql = N'SELECT COUNT_BIG(*) AS TotalRows,
        COUNT_BIG(CASE WHEN ' + @QCol + N' IS NULL THEN 1 END) AS NullRows,

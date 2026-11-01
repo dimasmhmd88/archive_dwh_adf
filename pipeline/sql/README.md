@@ -2,7 +2,7 @@
 
 | Item | Value |
 |---|---|
-| Script version | 0.5 – **Draft, not reviewed, not executed against any database** |
+| Script version | 0.5.1 – **Draft, not reviewed**. 0.5.1 = collation fix (COLLATE DATABASE_DEFAULT on sys.* string columns and STRING_AGG) after the error "Cannot resolve collation conflict for string_agg operation" on Azure SQL Database |
 | Date | 1 November 2026 |
 | Content | v0.4 (30 Oct 2026) + v0.5 patch (31 Oct 2026, CR-01 automatic table selection for Initial Cut-off) |
 | Target | Azure SQL Database, DWH database, schema `ret`, compatibility level ≥ 130 |

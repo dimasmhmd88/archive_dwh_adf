@@ -1,6 +1,6 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - schema ret - 03_functions.sql
-   Part of DWH_Retention_DB_Objects_v0.5.sql (DRAFT - not reviewed, not executed against any database).
+   Part of DWH_Retention_DB_Objects_v0.5.sql, v0.5.1 collation fix (DRAFT - not reviewed, not executed against any database).
    Functions (section 4)
    Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
    ===================================================================================== */
@@ -118,7 +118,7 @@ AS
 BEGIN
     DECLARE @Name SYSNAME, @SchemaName SYSNAME, @IsUserDefined BIT;
 
-    SELECT @Name = t.name, @SchemaName = SCHEMA_NAME(t.schema_id), @IsUserDefined = t.is_user_defined
+    SELECT @Name = t.name COLLATE DATABASE_DEFAULT, @SchemaName = SCHEMA_NAME(t.schema_id), @IsUserDefined = t.is_user_defined
     FROM sys.types AS t
     WHERE t.user_type_id = @UserTypeId;
 
@@ -147,53 +147,53 @@ BEGIN
     DECLARE @Cols NVARCHAR(MAX), @Idx NVARCHAR(MAX), @Chk NVARCHAR(MAX), @Def NVARCHAR(MAX),
             @Fk NVARCHAR(MAX), @Trg NVARCHAR(MAX), @Perm NVARCHAR(MAX);
 
-    SELECT @Cols = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(c.name, N'|', TYPE_NAME(c.user_type_id), N'|', c.max_length, N'|',
-                   c.precision, N'|', c.scale, N'|', c.is_nullable, N'|', c.collation_name, N'|', c.is_identity, N'|',
-                   cc.definition, N'|', cc.is_persisted)), N';') WITHIN GROUP (ORDER BY c.column_id)
+    SELECT @Cols = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(c.name COLLATE DATABASE_DEFAULT, N'|', TYPE_NAME(c.user_type_id), N'|', c.max_length, N'|',
+                   c.precision, N'|', c.scale, N'|', c.is_nullable, N'|', c.collation_name COLLATE DATABASE_DEFAULT, N'|', c.is_identity, N'|',
+                   cc.definition COLLATE DATABASE_DEFAULT, N'|', cc.is_persisted)) COLLATE DATABASE_DEFAULT, N';') WITHIN GROUP (ORDER BY c.column_id)
     FROM sys.columns AS c
     LEFT JOIN sys.computed_columns AS cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
     WHERE c.object_id = @ObjectId;
 
-    SELECT @Idx = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(i.name, N'|', i.type, N'|', i.is_unique, N'|', i.is_primary_key, N'|',
-                  i.is_unique_constraint, N'|', i.filter_definition, N'|', i.is_disabled, N'|', i.fill_factor, N'|',
-                  i.ignore_dup_key, N'|', k.Cols, N'|', pz.Compression)), N';') WITHIN GROUP (ORDER BY i.type, i.name)
+    SELECT @Idx = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(i.name COLLATE DATABASE_DEFAULT, N'|', i.type, N'|', i.is_unique, N'|', i.is_primary_key, N'|',
+                  i.is_unique_constraint, N'|', i.filter_definition COLLATE DATABASE_DEFAULT, N'|', i.is_disabled, N'|', i.fill_factor, N'|',
+                  i.ignore_dup_key, N'|', k.Cols, N'|', pz.Compression)) COLLATE DATABASE_DEFAULT, N';') WITHIN GROUP (ORDER BY i.type, i.name COLLATE DATABASE_DEFAULT)
     FROM sys.indexes AS i
-    OUTER APPLY (SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(c.name, CASE WHEN ic.is_descending_key = 1 THEN N' DESC' END,
-                        CASE WHEN ic.is_included_column = 1 THEN N' INCLUDE' END)), N',') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id) AS Cols
+    OUTER APPLY (SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(c.name COLLATE DATABASE_DEFAULT, CASE WHEN ic.is_descending_key = 1 THEN N' DESC' END,
+                        CASE WHEN ic.is_included_column = 1 THEN N' INCLUDE' END)) COLLATE DATABASE_DEFAULT, N',') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id) AS Cols
                  FROM sys.index_columns AS ic
                  JOIN sys.columns AS c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                  WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id) AS k
-    OUTER APPLY (SELECT MIN(p.data_compression_desc) AS Compression
+    OUTER APPLY (SELECT MIN(p.data_compression_desc COLLATE DATABASE_DEFAULT) AS Compression
                  FROM sys.partitions AS p WHERE p.object_id = i.object_id AND p.index_id = i.index_id) AS pz
     WHERE i.object_id = @ObjectId;
 
-    SELECT @Chk = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(ck.name, N'|', ck.definition, N'|', ck.is_disabled, N'|', ck.is_not_trusted)), N';')
-                  WITHIN GROUP (ORDER BY ck.name)
+    SELECT @Chk = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(ck.name COLLATE DATABASE_DEFAULT, N'|', ck.definition COLLATE DATABASE_DEFAULT, N'|', ck.is_disabled, N'|', ck.is_not_trusted)) COLLATE DATABASE_DEFAULT, N';')
+                  WITHIN GROUP (ORDER BY ck.name COLLATE DATABASE_DEFAULT)
     FROM sys.check_constraints AS ck
     WHERE ck.parent_object_id = @ObjectId;
 
-    SELECT @Def = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(dc.name, N'|', c.name, N'|', dc.definition)), N';') WITHIN GROUP (ORDER BY dc.name)
+    SELECT @Def = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(dc.name COLLATE DATABASE_DEFAULT, N'|', c.name COLLATE DATABASE_DEFAULT, N'|', dc.definition COLLATE DATABASE_DEFAULT)), N';') WITHIN GROUP (ORDER BY dc.name COLLATE DATABASE_DEFAULT)
     FROM sys.default_constraints AS dc
     JOIN sys.columns AS c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
     WHERE dc.parent_object_id = @ObjectId;
 
-    SELECT @Fk = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(fk.name, N'|', OBJECT_SCHEMA_NAME(fk.referenced_object_id), N'.',
+    SELECT @Fk = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(fk.name COLLATE DATABASE_DEFAULT, N'|', OBJECT_SCHEMA_NAME(fk.referenced_object_id), N'.',
                  OBJECT_NAME(fk.referenced_object_id), N'|', fk.delete_referential_action, N'|', fk.update_referential_action, N'|',
-                 fk.is_disabled, N'|', fk.is_not_trusted, N'|', fc.Cols)), N';') WITHIN GROUP (ORDER BY fk.name)
+                 fk.is_disabled, N'|', fk.is_not_trusted, N'|', fc.Cols)) COLLATE DATABASE_DEFAULT, N';') WITHIN GROUP (ORDER BY fk.name COLLATE DATABASE_DEFAULT)
     FROM sys.foreign_keys AS fk
     OUTER APPLY (SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(COL_NAME(x.parent_object_id, x.parent_column_id), N'>',
-                        COL_NAME(x.referenced_object_id, x.referenced_column_id))), N',') WITHIN GROUP (ORDER BY x.constraint_column_id) AS Cols
+                        COL_NAME(x.referenced_object_id, x.referenced_column_id))) COLLATE DATABASE_DEFAULT, N',') WITHIN GROUP (ORDER BY x.constraint_column_id) AS Cols
                  FROM sys.foreign_key_columns AS x WHERE x.constraint_object_id = fk.object_id) AS fc
     WHERE fk.parent_object_id = @ObjectId;
 
-    SELECT @Trg = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(tr.name, N'|', tr.is_disabled, N'|', tr.is_instead_of_trigger)), N';')
-                  WITHIN GROUP (ORDER BY tr.name)
+    SELECT @Trg = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(tr.name COLLATE DATABASE_DEFAULT, N'|', tr.is_disabled, N'|', tr.is_instead_of_trigger)) COLLATE DATABASE_DEFAULT, N';')
+                  WITHIN GROUP (ORDER BY tr.name COLLATE DATABASE_DEFAULT)
     FROM sys.triggers AS tr
     WHERE tr.parent_id = @ObjectId;
 
-    SELECT @Perm = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(dp.state_desc, N'|', dp.permission_name, N'|', USER_NAME(dp.grantee_principal_id),
-                   N'|', COL_NAME(dp.major_id, NULLIF(dp.minor_id, 0)))), N';')
-                   WITHIN GROUP (ORDER BY dp.state_desc, dp.permission_name, dp.grantee_principal_id, dp.minor_id)
+    SELECT @Perm = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(dp.state_desc COLLATE DATABASE_DEFAULT, N'|', dp.permission_name COLLATE DATABASE_DEFAULT, N'|', USER_NAME(dp.grantee_principal_id),
+                   N'|', COL_NAME(dp.major_id, NULLIF(dp.minor_id, 0)))) COLLATE DATABASE_DEFAULT, N';')
+                   WITHIN GROUP (ORDER BY dp.state_desc COLLATE DATABASE_DEFAULT, dp.permission_name COLLATE DATABASE_DEFAULT, dp.grantee_principal_id, dp.minor_id)
     FROM sys.database_permissions AS dp
     WHERE dp.class = 1 AND dp.major_id = @ObjectId;
 
