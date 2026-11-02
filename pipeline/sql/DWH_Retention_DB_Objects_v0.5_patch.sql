@@ -183,7 +183,7 @@ BEGIN
         WHERE k.IsKnown = 1 AND k.SkipReason IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM ret.RetentionTableLog AS t WHERE t.RunId = @RunId AND t.TableConfigId = k.TableConfigId);
 
-        SELECT @Unknown = STRING_AGG(CONVERT(NVARCHAR(20), TableConfigId), N', ')
+        SELECT @Unknown = STRING_AGG(CONVERT(NVARCHAR(20), TableConfigId) COLLATE DATABASE_DEFAULT, N', ')
         FROM #Candidate WHERE IsKnown = 0;
 
         IF @IsAutoMode = 1
