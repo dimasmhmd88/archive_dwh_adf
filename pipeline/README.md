@@ -19,8 +19,8 @@ The pipelines contain no business logic of their own. Every decision (table sele
 adf/                         ADF Git-integration layout (copy into the factory repository root folder)
   linkedService/             LS_RET_AzureSqlDb, LS_RET_ArchiveBlob          (placeholders: <sql-server-name> etc.)
   dataset/                   DS_RET_SqlDb, DS_RET_ArchiveParquet, DS_RET_ArchiveFolder
-  pipeline/                  11 pipelines: folder "DWH Retention/Run" (2, started by the operator / trigger)
-                             and "DWH Retention/Internal" (9, called by the Run pipelines only)
+  pipeline/                  11 pipelines: folder "DWH Retention" (2 master pipelines, started by the operator / trigger)
+                             and its subfolder "DWH Retention/Internal" (9, called by the master pipelines only)
   trigger/                   TR_RET_DailyRoutine_2100_WIB (deployed Stopped)
 arm/
   ARMTemplateForFactory.json             same resources as one ARM template (17 resources)
@@ -34,8 +34,8 @@ tools/
 ## 2. Pipeline hierarchy
 
 ```
-Run/PL_RET_01_InitialCutoff_Master  (PL-01, manual, concurrency 1)     params: TableConfigIdList (empty = automatic), RunDate, DowntimeReference, TriggeredBy
-Run/PL_RET_02_DailyRoutine_Master   (PL-02, trigger 21:00 WIB, conc. 1) params: RunDate, TriggeredBy
+DWH Retention/PL_RET_01_InitialCutoff_Master  (PL-01, manual, concurrency 1)     params: TableConfigIdList (empty = automatic), RunDate, DowntimeReference, TriggeredBy
+DWH Retention/PL_RET_02_DailyRoutine_Master   (PL-02, trigger 21:00 WIB, conc. 1) params: RunDate, TriggeredBy
  │  usp_StartRun → usp_GetTablesToProcess → ForEach table (sequential) → usp_EndRun (fails the run if not SUCCEEDED)
  └─ PL_RET_03_Table_Process  (PL-03, per table)
      │  usp_BeginTable ─┬─ PROCEED (not VALIDATION) → PL_RET_03A_Table_DataSteps
@@ -136,7 +136,7 @@ Facts are stated as found in the sources; recommendations are marked [REC].
 
 1. Manage → Linked services → + New: create `LS_RET_AzureSqlDb` (Azure SQL Database) and `LS_RET_ArchiveBlob` (Azure Blob Storage), both with System-assigned managed identity.
 2. Author → + → Dataset: create `DS_RET_SqlDb` (Azure SQL Database), `DS_RET_ArchiveParquet` (Blob, Parquet), `DS_RET_ArchiveFolder` (Blob, Binary); open `{}` (Code) and replace the JSON with the file content.
-3. Author → + → Pipeline: for each file in this order paste the JSON into `{}`: 03F, 03E, 03C, 03D, 03B, 03A, 04A, 04, 03, 01, 02. Put 01 and 02 in folder `DWH Retention/Run`, the others in `DWH Retention/Internal` (the folder is part of the JSON).
+3. Author → + → Pipeline: for each file in this order paste the JSON into `{}`: 03F, 03E, 03C, 03D, 03B, 03A, 04A, 04, 03, 01, 02. Put 01 and 02 in folder `DWH Retention`, the others in its subfolder `DWH Retention/Internal` (the folder is part of the JSON).
 4. Manage → Triggers: create `TR_RET_DailyRoutine_2100_WIB` (Schedule, daily 21:00, (UTC+07:00) Bangkok, Hanoi, Jakarta), not started; attach it to PL_RET_02.
 5. Validate all → Publish all.
 

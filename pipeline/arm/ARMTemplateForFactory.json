@@ -4265,7 +4265,7 @@
                     }
                 },
                 "folder": {
-                    "name": "DWH Retention/Run"
+                    "name": "DWH Retention"
                 },
                 "annotations": [
                     "FSD-DWH-RET-001 v0.2",
@@ -4546,7 +4546,7 @@
                     }
                 },
                 "folder": {
-                    "name": "DWH Retention/Run"
+                    "name": "DWH Retention"
                 },
                 "annotations": [
                     "FSD-DWH-RET-001 v0.2",

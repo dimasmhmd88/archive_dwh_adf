@@ -10,7 +10,7 @@ import json, os, sys, copy
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "out"
 FOLDER = "DWH Retention"
-FOLDER_RUN = "DWH Retention/Run"
+FOLDER_RUN = "DWH Retention"
 FOLDER_INT = "DWH Retention/Internal"
 ANN = ["FSD-DWH-RET-001 v0.2", "DRAFT - not approved"]
 
