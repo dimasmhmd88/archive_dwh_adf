@@ -1,0 +1,20 @@
+{
+    "name": "DS_RET_SqlDb",
+    "properties": {
+        "description": "Generic dataset (SQL Server connector, linked service Agus_SqlServer_dwh) for Lookup and Copy activities that call schema ret procedures (no table bound).",
+        "linkedServiceName": {
+            "referenceName": "Agus_SqlServer_dwh",
+            "type": "LinkedServiceReference"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ],
+        "folder": {
+            "name": "DWH Retention"
+        },
+        "type": "SqlServerTable",
+        "schema": [],
+        "typeProperties": {}
+    }
+}

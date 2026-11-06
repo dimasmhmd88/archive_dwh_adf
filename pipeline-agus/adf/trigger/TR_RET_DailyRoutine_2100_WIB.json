@@ -1,0 +1,37 @@
+{
+    "name": "TR_RET_DailyRoutine_2100_WIB",
+    "properties": {
+        "description": "BR-18: Daily Routine every day at 21:00 UTC+7 (SE Asia Standard Time). Deployed STOPPED: start it only after ret.usp_ActivateDailyRoutine (FSD 16.2, FR-020).",
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ],
+        "runtimeState": "Stopped",
+        "pipelines": [
+            {
+                "pipelineReference": {
+                    "referenceName": "PL_RET_02_DailyRoutine_Master",
+                    "type": "PipelineReference"
+                },
+                "parameters": {}
+            }
+        ],
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+            "recurrence": {
+                "frequency": "Day",
+                "interval": 1,
+                "startTime": "2026-12-01T21:00:00",
+                "timeZone": "SE Asia Standard Time",
+                "schedule": {
+                    "minutes": [
+                        0
+                    ],
+                    "hours": [
+                        21
+                    ]
+                }
+            }
+        }
+    }
+}

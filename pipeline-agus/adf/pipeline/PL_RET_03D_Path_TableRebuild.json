@@ -1,0 +1,584 @@
+{
+    "name": "PL_RET_03D_Path_TableRebuild",
+    "properties": {
+        "description": "FR-010 / Section 8.4 table rebuild (Initial Cut-off Run, method TABLE_REBUILD, downtime reference required): Prepare (RB-01..05) -> export from original (RB-06) -> validate (RB-07) -> Swap (RB-07..10) -> post-check; Abort + file cleanup on any failure before the swap commits.",
+        "activities": [
+            {
+                "name": "LKP_RebuildPrepare",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.08:30:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_TableRebuildPrepare",
+                        "storedProcedureParameters": {
+                            "RunId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.RunId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "08:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "RB-01..RB-05 (MD-04 steps 1-2): checks, new table <table>__RBD_<RunId> with the retained rows, keys/constraints/indexes, count check. Original table unchanged."
+            },
+            {
+                "name": "SET_PrepareResult",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_RebuildPrepare",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "vPrepareResult",
+                    "value": {
+                        "value": "@activity('LKP_RebuildPrepare').output.firstRow.PrepareResult",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "IF_ExportRequired",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "SET_PrepareResult",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@and(equals(variables('vPrepareResult'), 'COMPLETED'), equals(pipeline().parameters.NextAction, 'EXPORT'))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_ExportBusinessDates",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RET_03E_Export_BusinessDates",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "TableLogId": {
+                                        "value": "@pipeline().parameters.TableLogId",
+                                        "type": "Expression"
+                                    },
+                                    "ProcessType": {
+                                        "value": "@pipeline().parameters.ProcessType",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@pipeline().parameters.SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@pipeline().parameters.TableName",
+                                        "type": "Expression"
+                                    },
+                                    "CleanupOnStop": false
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "RB-06 (MD-04 step 3): archived segment exported from the ORIGINAL table."
+            },
+            {
+                "name": "IF_Prepared",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "IF_ExportRequired",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(variables('vPrepareResult'), 'COMPLETED')",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "LKP_ValidateArchive",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.00:30:00",
+                                "retry": 1,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_ValidateArchive",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            },
+                            "description": "RB-07: archive row-count validation."
+                        },
+                        {
+                            "name": "SET_ValidationResult",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_ValidateArchive",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vValidationResult",
+                                "value": {
+                                    "value": "@activity('LKP_ValidateArchive').output.firstRow.ValidationResult",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                }
+            },
+            {
+                "name": "IF_ValidationPassed",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "IF_Prepared",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(variables('vValidationResult'), 'PASSED')",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "LKP_RebuildSwap",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.08:30:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_TableRebuildSwap",
+                                    "storedProcedureParameters": {
+                                        "RunId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.RunId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "08:00:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            },
+                            "description": "RB-07 recount, RB-08 truncate + drop + rename in one transaction (MD-04 steps 4-5, MD-06, DEC-13), RB-09 reseed / view refresh, RB-10 definition check."
+                        },
+                        {
+                            "name": "SET_SwapResult",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_RebuildSwap",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vSwapResult",
+                                "value": {
+                                    "value": "@activity('LKP_RebuildSwap').output.firstRow.SwapResult",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "SET_SwapDeleteStatus",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "SET_SwapResult",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vSwapDeleteStatus",
+                                "value": {
+                                    "value": "@string(coalesce(activity('LKP_RebuildSwap').output.firstRow?.DeleteStatus, ''))",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                }
+            },
+            {
+                "name": "IF_SwapCompleted",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "IF_ValidationPassed",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(variables('vSwapResult'), 'COMPLETED')",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "LKP_PostCheck",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.04:15:00",
+                                "retry": 1,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_PostCheck",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "04:00:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            },
+                            "description": "Post-check; IC status COMPLETED (FR-020)."
+                        }
+                    ],
+                    "ifFalseActivities": []
+                }
+            },
+            {
+                "name": "IF_AbortRequired",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "IF_SwapCompleted",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@and(equals(variables('vPrepareResult'), 'COMPLETED'), not(equals(variables('vSwapDeleteStatus'), 'COMPLETED')))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "LKP_RebuildAbort",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.00:30:00",
+                                "retry": 1,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_TableRebuildAbort",
+                                    "storedProcedureParameters": {
+                                        "RunId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.RunId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "MarkOrphanFiles": {
+                                            "type": "Boolean",
+                                            "value": false
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            },
+                            "description": "Any failure before RB-08 commits: drop the new table, revoke validation, request file cleanup."
+                        },
+                        {
+                            "name": "SET_AbortCleanup",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_RebuildAbort",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vAbortCleanup",
+                                "value": {
+                                    "value": "@if(bool(activity('LKP_RebuildAbort').output.firstRow.CleanupRequired), '1', '0')",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                }
+            },
+            {
+                "name": "IF_CleanupRequired",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "IF_AbortRequired",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(variables('vAbortCleanup'), '1')",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_FileCleanup",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RET_03F_Table_FileCleanup",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "TableLogId": {
+                                        "value": "@pipeline().parameters.TableLogId",
+                                        "type": "Expression"
+                                    },
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@pipeline().parameters.SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@pipeline().parameters.TableName",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                }
+            }
+        ],
+        "parameters": {
+            "RunId": {
+                "type": "string"
+            },
+            "TableLogId": {
+                "type": "string"
+            },
+            "ProcessType": {
+                "type": "string"
+            },
+            "NextAction": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "BlobPath": {
+                "type": "string"
+            },
+            "SchemaName": {
+                "type": "string"
+            },
+            "TableName": {
+                "type": "string"
+            }
+        },
+        "variables": {
+            "vPrepareResult": {
+                "type": "String",
+                "defaultValue": "NOT_RUN"
+            },
+            "vValidationResult": {
+                "type": "String",
+                "defaultValue": "NOT_RUN"
+            },
+            "vSwapResult": {
+                "type": "String",
+                "defaultValue": "NOT_RUN"
+            },
+            "vSwapDeleteStatus": {
+                "type": "String",
+                "defaultValue": ""
+            },
+            "vAbortCleanup": {
+                "type": "String",
+                "defaultValue": "0"
+            }
+        },
+        "folder": {
+            "name": "DWH Retention/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ]
+    }
+}

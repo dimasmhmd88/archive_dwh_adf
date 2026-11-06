@@ -1,0 +1,39 @@
+{
+    "name": "DS_RET_ArchiveFolder",
+    "properties": {
+        "description": "Archive folder (binary) for Get Metadata (child items) and Delete activities (FR-013, FR-018).",
+        "linkedServiceName": {
+            "referenceName": "Agus_AzureBlobStorage1",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "Container": {
+                "type": "string"
+            },
+            "FolderPath": {
+                "type": "string"
+            }
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ],
+        "folder": {
+            "name": "DWH Retention"
+        },
+        "type": "Binary",
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobStorageLocation",
+                "folderPath": {
+                    "value": "@dataset().FolderPath",
+                    "type": "Expression"
+                },
+                "container": {
+                    "value": "@dataset().Container",
+                    "type": "Expression"
+                }
+            }
+        }
+    }
+}

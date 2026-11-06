@@ -1,0 +1,327 @@
+{
+    "name": "PL_RET_03A_Table_DataSteps",
+    "properties": {
+        "description": "Per-table data steps after usp_BeginTable returned PROCEED: resume -> identify eligible data -> batch-delete path or table-rebuild path (IC only) -> post-check.",
+        "activities": [
+            {
+                "name": "IF_PendingResume",
+                "type": "IfCondition",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@not(empty(pipeline().parameters.PendingResumeTableLogId))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_ResumeDelete",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RET_03B_Table_ResumeDelete",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "TableConfigId": {
+                                        "value": "@pipeline().parameters.TableConfigId",
+                                        "type": "Expression"
+                                    },
+                                    "PendingResumeTableLogId": {
+                                        "value": "@pipeline().parameters.PendingResumeTableLogId",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "FR-017: resume pending ranges before new data is identified."
+            },
+            {
+                "name": "LKP_IdentifyEligibleData",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "IF_PendingResume",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.04:15:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_IdentifyEligibleData",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "04:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "IC-01 / DR-01 / FR-005 (FR-023 for child tables): per business-date snapshot; NextAction EXPORT / VALIDATE / NONE."
+            },
+            {
+                "name": "SET_ProcessingPath",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_IdentifyEligibleData",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "vProcessingPath",
+                    "value": {
+                        "value": "@if(not(equals(activity('LKP_IdentifyEligibleData').output.firstRow.Result, 'SUCCEEDED')), 'NONE', if(equals(activity('LKP_IdentifyEligibleData').output.firstRow.NextAction, 'NONE'), if(equals(pipeline().parameters.ProcessType, 'INITIAL_CUTOFF'), 'IC_NODATA', 'NONE'), if(and(equals(pipeline().parameters.ProcessType, 'INITIAL_CUTOFF'), equals(pipeline().parameters.InitialCutoffMethod, 'TABLE_REBUILD')), 'REBUILD', 'BATCH')))",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "SW_ProcessingPath",
+                "type": "Switch",
+                "dependsOn": [
+                    {
+                        "activity": "SET_ProcessingPath",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "description": "BATCH: Daily Routine or IC with BATCH_DELETE. REBUILD: IC with TABLE_REBUILD (BR-11). IC_NODATA: IC without eligible rows - post-check only, so the table reaches COMPLETED. NONE: nothing eligible (DR) or the step before failed (status already recorded).",
+                "typeProperties": {
+                    "on": {
+                        "value": "@variables('vProcessingPath')",
+                        "type": "Expression"
+                    },
+                    "cases": [
+                        {
+                            "value": "BATCH",
+                            "activities": [
+                                {
+                                    "name": "EXEC_Path_BatchDelete",
+                                    "type": "ExecutePipeline",
+                                    "dependsOn": [],
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "pipeline": {
+                                            "referenceName": "PL_RET_03C_Path_BatchDelete",
+                                            "type": "PipelineReference"
+                                        },
+                                        "waitOnCompletion": true,
+                                        "parameters": {
+                                            "RunId": {
+                                                "value": "@pipeline().parameters.RunId",
+                                                "type": "Expression"
+                                            },
+                                            "TableLogId": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            },
+                                            "ProcessType": {
+                                                "value": "@pipeline().parameters.ProcessType",
+                                                "type": "Expression"
+                                            },
+                                            "ArchiveContainer": {
+                                                "value": "@pipeline().parameters.ArchiveContainer",
+                                                "type": "Expression"
+                                            },
+                                            "BlobPath": {
+                                                "value": "@pipeline().parameters.BlobPath",
+                                                "type": "Expression"
+                                            },
+                                            "SchemaName": {
+                                                "value": "@pipeline().parameters.SchemaName",
+                                                "type": "Expression"
+                                            },
+                                            "TableName": {
+                                                "value": "@pipeline().parameters.TableName",
+                                                "type": "Expression"
+                                            },
+                                            "NextAction": {
+                                                "value": "@activity('LKP_IdentifyEligibleData').output.firstRow.NextAction",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "value": "REBUILD",
+                            "activities": [
+                                {
+                                    "name": "EXEC_Path_TableRebuild",
+                                    "type": "ExecutePipeline",
+                                    "dependsOn": [],
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "pipeline": {
+                                            "referenceName": "PL_RET_03D_Path_TableRebuild",
+                                            "type": "PipelineReference"
+                                        },
+                                        "waitOnCompletion": true,
+                                        "parameters": {
+                                            "RunId": {
+                                                "value": "@pipeline().parameters.RunId",
+                                                "type": "Expression"
+                                            },
+                                            "TableLogId": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            },
+                                            "ProcessType": {
+                                                "value": "@pipeline().parameters.ProcessType",
+                                                "type": "Expression"
+                                            },
+                                            "ArchiveContainer": {
+                                                "value": "@pipeline().parameters.ArchiveContainer",
+                                                "type": "Expression"
+                                            },
+                                            "BlobPath": {
+                                                "value": "@pipeline().parameters.BlobPath",
+                                                "type": "Expression"
+                                            },
+                                            "SchemaName": {
+                                                "value": "@pipeline().parameters.SchemaName",
+                                                "type": "Expression"
+                                            },
+                                            "TableName": {
+                                                "value": "@pipeline().parameters.TableName",
+                                                "type": "Expression"
+                                            },
+                                            "NextAction": {
+                                                "value": "@activity('LKP_IdentifyEligibleData').output.firstRow.NextAction",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "value": "IC_NODATA",
+                            "activities": [
+                                {
+                                    "name": "LKP_PostCheck_NoData",
+                                    "type": "Lookup",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "timeout": "0.04:15:00",
+                                        "retry": 1,
+                                        "retryIntervalInSeconds": 60,
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "source": {
+                                            "type": "SqlServerSource",
+                                            "sqlReaderStoredProcedureName": "ret.usp_PostCheck",
+                                            "storedProcedureParameters": {
+                                                "TableLogId": {
+                                                    "type": "Int64",
+                                                    "value": {
+                                                        "value": "@pipeline().parameters.TableLogId",
+                                                        "type": "Expression"
+                                                    }
+                                                }
+                                            },
+                                            "queryTimeout": "04:00:00",
+                                            "partitionOption": "None"
+                                        },
+                                        "dataset": {
+                                            "referenceName": "DS_RET_SqlDb",
+                                            "type": "DatasetReference"
+                                        },
+                                        "firstRowOnly": true
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "defaultActivities": []
+                }
+            }
+        ],
+        "parameters": {
+            "RunId": {
+                "type": "string"
+            },
+            "TableConfigId": {
+                "type": "string"
+            },
+            "TableLogId": {
+                "type": "string"
+            },
+            "ProcessType": {
+                "type": "string"
+            },
+            "InitialCutoffMethod": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "BlobPath": {
+                "type": "string"
+            },
+            "SchemaName": {
+                "type": "string"
+            },
+            "TableName": {
+                "type": "string"
+            },
+            "PendingResumeTableLogId": {
+                "type": "string",
+                "defaultValue": ""
+            }
+        },
+        "variables": {
+            "vProcessingPath": {
+                "type": "String",
+                "defaultValue": "NONE"
+            }
+        },
+        "folder": {
+            "name": "DWH Retention/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ]
+    }
+}
