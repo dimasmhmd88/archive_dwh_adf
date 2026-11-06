@@ -1,0 +1,48 @@
+{
+    "name": "DS_RET_ArchiveParquet",
+    "properties": {
+        "description": "One Parquet file per table and business date: <container>/<BlobPath>/year=YYYY/month=MM/day=DD/<schema>_<table>_<yyyyMMdd>_<RunId>.parquet (FR-007, MD-07, DEC-04).",
+        "linkedServiceName": {
+            "referenceName": "Agus_AzureBlobStorage1",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "Container": {
+                "type": "string"
+            },
+            "FolderPath": {
+                "type": "string"
+            },
+            "FileName": {
+                "type": "string"
+            }
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ],
+        "folder": {
+            "name": "DWH Retention"
+        },
+        "type": "Parquet",
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobStorageLocation",
+                "fileName": {
+                    "value": "@dataset().FileName",
+                    "type": "Expression"
+                },
+                "folderPath": {
+                    "value": "@dataset().FolderPath",
+                    "type": "Expression"
+                },
+                "container": {
+                    "value": "@dataset().Container",
+                    "type": "Expression"
+                }
+            },
+            "compressionCodec": "snappy"
+        },
+        "schema": []
+    }
+}

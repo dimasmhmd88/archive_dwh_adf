@@ -1,0 +1,280 @@
+{
+    "name": "PL_RET_03B_Table_ResumeDelete",
+    "properties": {
+        "description": "FR-017 / PRC-05: resume validated batch-delete ranges of earlier runs, oldest first, until none is pending. A non-COMPLETED result stops the loop; the table log status set by ret.usp_BatchDelete then blocks further steps.",
+        "activities": [
+            {
+                "name": "SET_InitPendingId",
+                "type": "SetVariable",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "vPendingTableLogId",
+                    "value": {
+                        "value": "@pipeline().parameters.PendingResumeTableLogId",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "UNT_ResumePendingRanges",
+                "type": "Until",
+                "dependsOn": [
+                    {
+                        "activity": "SET_InitPendingId",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@or(empty(variables('vPendingTableLogId')), equals(variables('vStop'), '1'))",
+                        "type": "Expression"
+                    },
+                    "timeout": "0.12:00:00",
+                    "activities": [
+                        {
+                            "name": "LKP_BatchDelete_Resume",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.08:30:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_BatchDelete",
+                                    "storedProcedureParameters": {
+                                        "RunId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.RunId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@variables('vPendingTableLogId')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "08:00:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            },
+                            "description": "Removes the remaining rows of a validated range of an earlier run without export (DBR-09)."
+                        },
+                        {
+                            "name": "SET_Stop_FromResult",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_BatchDelete_Resume",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vStop",
+                                "value": {
+                                    "value": "@if(equals(activity('LKP_BatchDelete_Resume').output.firstRow.DeleteResult, 'COMPLETED'), '0', '1')",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "LKP_GetPendingResume",
+                            "type": "Lookup",
+                            "dependsOn": [
+                                {
+                                    "activity": "SET_Stop_FromResult",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.00:30:00",
+                                "retry": 1,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_GetPendingResume",
+                                    "storedProcedureParameters": {
+                                        "RunId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.RunId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "TableConfigId": {
+                                            "type": "Int32",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableConfigId",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        },
+                        {
+                            "name": "SET_NextPendingId",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_GetPendingResume",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vPendingTableLogId",
+                                "value": {
+                                    "value": "@if(contains(activity('LKP_GetPendingResume').output, 'firstRow'), string(activity('LKP_GetPendingResume').output?.firstRow?.PendingResumeTableLogId), '')",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "SET_Stop_OnError",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_BatchDelete_Resume",
+                                    "dependencyConditions": [
+                                        "Failed"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vStop",
+                                "value": "1"
+                            }
+                        },
+                        {
+                            "name": "SET_Unexpected_OnError",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "SET_Stop_OnError",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vUnexpectedError",
+                                "value": {
+                                    "value": "@activity('LKP_BatchDelete_Resume').error.message",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "IF_UnexpectedError",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "UNT_ResumePendingRanges",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@not(empty(variables('vUnexpectedError')))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "FAIL_ResumeError",
+                            "type": "Fail",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "message": {
+                                    "value": "@concat('Resume of a validated range failed: ', variables('vUnexpectedError'))",
+                                    "type": "Expression"
+                                },
+                                "errorCode": "RET-RESUME-ERROR"
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "Only an ADF/connection error fails the pipeline; FAILED/STOPPED results are already recorded by the procedure."
+            }
+        ],
+        "parameters": {
+            "RunId": {
+                "type": "string"
+            },
+            "TableConfigId": {
+                "type": "string"
+            },
+            "PendingResumeTableLogId": {
+                "type": "string"
+            }
+        },
+        "variables": {
+            "vPendingTableLogId": {
+                "type": "String",
+                "defaultValue": ""
+            },
+            "vStop": {
+                "type": "String",
+                "defaultValue": "0"
+            },
+            "vUnexpectedError": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "folder": {
+            "name": "DWH Retention/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET-001 v0.2",
+            "DRAFT - not approved"
+        ]
+    }
+}
