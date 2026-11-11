@@ -1,42 +1,346 @@
 {
-  "_source": "Transcribed from DWH_Retention_DB_Objects_v0.4.sql (project doc sql/), procedure parameter lists and final SELECT columns",
-  "ret.usp_StartRun": {"required": ["ProcessType"], "optional": ["TriggerType", "AdfPipelineRunId", "RunDate", "TriggeredBy", "DowntimeReference"],
-                       "columns": ["RunId", "ProcessType", "RunDate", "Status", "IsExistingRun"]},
-  "ret.usp_GetTablesToProcess": {"required": ["RunId"], "optional": ["TableConfigIdList"],
-                       "columns": ["TableConfigId", "SchemaName", "TableName", "RetentionColumn", "ParentTableConfigId", "IsChild", "DwhRetentionYears", "BlobRetentionYears", "TotalRetentionYears", "DwhCutoffDate", "ArchiveCutoffDate", "BlobPath", "ArchiveContainer", "InitialCutoffMethod", "SizeCategory", "ProcessingOrder"]},
-  "ret.usp_BeginTable": {"required": ["RunId", "TableConfigId"], "optional": [],
-                       "columns": ["TableLogId", "BeginResult", "CanRunArchiveExpiry", "PendingResumeTableLogId", "PendingResumeRunId", "PendingResumeMethod", "IsChild", "DwhCutoffDate", "ArchiveCutoffDate", "ErrorCode", "Message"]},
-  "ret.usp_GetPendingResume": {"required": ["RunId", "TableConfigId"], "optional": [],
-                       "columns": ["PendingResumeTableLogId", "PendingResumeRunId", "PendingResumeMethod", "ValidatedRowCount", "RowsDeleted", "DeleteStatus"]},
-  "ret.usp_IdentifyEligibleData": {"required": ["TableLogId"], "optional": [],
-                       "columns": ["TableLogId", "Result", "NextAction", "EligibleRows", "RowsToExport", "ExpiredRows", "RetainedRows", "OrphanRows", "ExportDateCount", "MinBusinessDate", "MaxBusinessDate", "Message"]},
-  "ret.usp_GetExportPlan": {"required": ["TableLogId"], "optional": ["MaxRows"],
-                       "columns": ["TableLogId", "BusinessDate", "FolderPath", "FileName", "ExpectedRows"]},
-  "ret.usp_ExportSourceRows": {"required": ["TableLogId", "BusinessDate"], "optional": [], "columns": []},
-  "ret.usp_CheckExecutionWindow": {"required": ["RunId"], "optional": [],
-                       "columns": ["IsWithinWindow", "NowUtc7", "WindowStart", "WindowEnd"]},
-  "ret.usp_LogExportResult": {"required": ["TableLogId", "BusinessDate", "ExportStatus"], "optional": ["RowsRead", "RowsWritten", "FilesWritten", "ExportStartTime", "ErrorMessage"],
-                       "columns": ["ContinueExport", "CleanupRequired", "RemainingDates", "TableStatus"]},
-  "ret.usp_ValidateArchive": {"required": ["TableLogId"], "optional": [],
-                       "columns": ["ValidationResult", "ValidatedRowCount", "DeleteMethod", "CleanupRequired", "Message"]},
-  "ret.usp_BatchDelete": {"required": ["RunId", "TableLogId"], "optional": [],
-                       "columns": ["DeleteResult", "RowsDeleted", "BatchCount", "IsResume", "CleanupRequired", "ErrorCode", "Message"]},
-  "ret.usp_TableRebuildAbort": {"required": ["RunId", "TableLogId"], "optional": ["MarkOrphanFiles", "Silent", "CleanupRequired"],
-                       "columns": ["AbortResult", "CleanupRequired", "Message"]},
-  "ret.usp_TableRebuildPrepare": {"required": ["RunId", "TableLogId"], "optional": [],
-                       "columns": ["PrepareResult", "NewTableName", "RowsRetained", "ErrorCode", "Message"]},
-  "ret.usp_TableRebuildSwap": {"required": ["RunId", "TableLogId"], "optional": [],
-                       "columns": ["SwapResult", "DeleteStatus", "RowsDeleted", "RowsRetained", "ErrorCode", "Message"]},
-  "ret.usp_PostCheck": {"required": ["TableLogId"], "optional": [],
-                       "columns": ["PostCheckResult", "RowsBelowCutoff", "RetainedRowsBefore", "RetainedRowsAfter", "Message"]},
-  "ret.usp_GetExpiredArchiveFolders": {"required": ["TableLogId", "ChildItemsJson"], "optional": ["Level", "Year", "Month"],
-                       "columns": ["FolderName", "FolderPath", "Action", "NextYear", "NextMonth"]},
-  "ret.usp_LogExpiredArchiveResult": {"required": ["TableLogId", "Status"], "optional": ["FoldersDeleted", "FilesDeleted", "ErrorMessage"],
-                       "columns": ["ArchiveFoldersDeleted", "ArchiveFilesDeleted"]},
-  "ret.usp_LogCleanupResult": {"required": ["TableLogId", "Status"], "optional": ["FilesRemoved", "ErrorMessage"],
-                       "columns": ["CleanupStatus", "Message"]},
-  "ret.usp_EndTable": {"required": ["TableLogId"], "optional": ["ErrorCode", "ErrorStep", "ErrorMessage"],
-                       "columns": ["TableLogId", "FinalStatus", "EligibleRows", "RowsExported", "RowsDeleted", "ResumeRowsDeleted", "OrphanRows", "ArchiveFilesDeleted", "ErrorCode", "ErrorMessage", "InitialCutoffStatus"]},
-  "ret.usp_EndRun": {"required": ["RunId"], "optional": ["ErrorMessage", "FailPipelineOnError"],
-                       "columns": ["RunId", "ProcessType", "RunDate", "Status", "TablesSelected", "TablesSucceeded", "TablesFailed", "TablesSkipped", "StartTime", "EndTime"]}
+ "_source": "Transcribed from pipeline/sql/DWH_Retention_DB_Objects_v0.6.sql (procedure parameter lists and final SELECT columns); v0.6 changes: usp_GetExpiredArchiveFolders (YEAR/FILE), new usp_GetRunArchiveFiles",
+ "ret.usp_StartRun": {
+  "required": [
+   "ProcessType"
+  ],
+  "optional": [
+   "TriggerType",
+   "AdfPipelineRunId",
+   "RunDate",
+   "TriggeredBy",
+   "DowntimeReference"
+  ],
+  "columns": [
+   "RunId",
+   "ProcessType",
+   "RunDate",
+   "Status",
+   "IsExistingRun"
+  ]
+ },
+ "ret.usp_GetTablesToProcess": {
+  "required": [
+   "RunId"
+  ],
+  "optional": [
+   "TableConfigIdList"
+  ],
+  "columns": [
+   "TableConfigId",
+   "SchemaName",
+   "TableName",
+   "RetentionColumn",
+   "ParentTableConfigId",
+   "IsChild",
+   "DwhRetentionYears",
+   "BlobRetentionYears",
+   "TotalRetentionYears",
+   "DwhCutoffDate",
+   "ArchiveCutoffDate",
+   "BlobPath",
+   "ArchiveContainer",
+   "InitialCutoffMethod",
+   "SizeCategory",
+   "ProcessingOrder"
+  ]
+ },
+ "ret.usp_BeginTable": {
+  "required": [
+   "RunId",
+   "TableConfigId"
+  ],
+  "optional": [],
+  "columns": [
+   "TableLogId",
+   "BeginResult",
+   "CanRunArchiveExpiry",
+   "PendingResumeTableLogId",
+   "PendingResumeRunId",
+   "PendingResumeMethod",
+   "IsChild",
+   "DwhCutoffDate",
+   "ArchiveCutoffDate",
+   "ErrorCode",
+   "Message"
+  ]
+ },
+ "ret.usp_GetPendingResume": {
+  "required": [
+   "RunId",
+   "TableConfigId"
+  ],
+  "optional": [],
+  "columns": [
+   "PendingResumeTableLogId",
+   "PendingResumeRunId",
+   "PendingResumeMethod",
+   "ValidatedRowCount",
+   "RowsDeleted",
+   "DeleteStatus"
+  ]
+ },
+ "ret.usp_IdentifyEligibleData": {
+  "required": [
+   "TableLogId"
+  ],
+  "optional": [],
+  "columns": [
+   "TableLogId",
+   "Result",
+   "NextAction",
+   "EligibleRows",
+   "RowsToExport",
+   "ExpiredRows",
+   "RetainedRows",
+   "OrphanRows",
+   "ExportDateCount",
+   "MinBusinessDate",
+   "MaxBusinessDate",
+   "Message"
+  ]
+ },
+ "ret.usp_GetExportPlan": {
+  "required": [
+   "TableLogId"
+  ],
+  "optional": [
+   "MaxRows"
+  ],
+  "columns": [
+   "TableLogId",
+   "BusinessDate",
+   "FolderPath",
+   "FileName",
+   "ExpectedRows"
+  ]
+ },
+ "ret.usp_ExportSourceRows": {
+  "required": [
+   "TableLogId",
+   "BusinessDate"
+  ],
+  "optional": [],
+  "columns": []
+ },
+ "ret.usp_CheckExecutionWindow": {
+  "required": [
+   "RunId"
+  ],
+  "optional": [],
+  "columns": [
+   "IsWithinWindow",
+   "NowUtc7",
+   "WindowStart",
+   "WindowEnd"
+  ]
+ },
+ "ret.usp_LogExportResult": {
+  "required": [
+   "TableLogId",
+   "BusinessDate",
+   "ExportStatus"
+  ],
+  "optional": [
+   "RowsRead",
+   "RowsWritten",
+   "FilesWritten",
+   "ExportStartTime",
+   "ErrorMessage"
+  ],
+  "columns": [
+   "ContinueExport",
+   "CleanupRequired",
+   "RemainingDates",
+   "TableStatus"
+  ]
+ },
+ "ret.usp_ValidateArchive": {
+  "required": [
+   "TableLogId"
+  ],
+  "optional": [],
+  "columns": [
+   "ValidationResult",
+   "ValidatedRowCount",
+   "DeleteMethod",
+   "CleanupRequired",
+   "Message"
+  ]
+ },
+ "ret.usp_BatchDelete": {
+  "required": [
+   "RunId",
+   "TableLogId"
+  ],
+  "optional": [],
+  "columns": [
+   "DeleteResult",
+   "RowsDeleted",
+   "BatchCount",
+   "IsResume",
+   "CleanupRequired",
+   "ErrorCode",
+   "Message"
+  ]
+ },
+ "ret.usp_TableRebuildAbort": {
+  "required": [
+   "RunId",
+   "TableLogId"
+  ],
+  "optional": [
+   "MarkOrphanFiles",
+   "Silent",
+   "CleanupRequired"
+  ],
+  "columns": [
+   "AbortResult",
+   "CleanupRequired",
+   "Message"
+  ]
+ },
+ "ret.usp_TableRebuildPrepare": {
+  "required": [
+   "RunId",
+   "TableLogId"
+  ],
+  "optional": [],
+  "columns": [
+   "PrepareResult",
+   "NewTableName",
+   "RowsRetained",
+   "ErrorCode",
+   "Message"
+  ]
+ },
+ "ret.usp_TableRebuildSwap": {
+  "required": [
+   "RunId",
+   "TableLogId"
+  ],
+  "optional": [],
+  "columns": [
+   "SwapResult",
+   "DeleteStatus",
+   "RowsDeleted",
+   "RowsRetained",
+   "ErrorCode",
+   "Message"
+  ]
+ },
+ "ret.usp_PostCheck": {
+  "required": [
+   "TableLogId"
+  ],
+  "optional": [],
+  "columns": [
+   "PostCheckResult",
+   "RowsBelowCutoff",
+   "RetainedRowsBefore",
+   "RetainedRowsAfter",
+   "Message"
+  ]
+ },
+ "ret.usp_GetExpiredArchiveFolders": {
+  "required": [
+   "TableLogId",
+   "ChildItemsJson"
+  ],
+  "optional": [
+   "Level",
+   "Year"
+  ],
+  "columns": [
+   "ItemName",
+   "FolderPath",
+   "FileName",
+   "Action"
+  ]
+ },
+ "ret.usp_LogExpiredArchiveResult": {
+  "required": [
+   "TableLogId",
+   "Status"
+  ],
+  "optional": [
+   "FoldersDeleted",
+   "FilesDeleted",
+   "ErrorMessage"
+  ],
+  "columns": [
+   "ArchiveFoldersDeleted",
+   "ArchiveFilesDeleted"
+  ]
+ },
+ "ret.usp_LogCleanupResult": {
+  "required": [
+   "TableLogId",
+   "Status"
+  ],
+  "optional": [
+   "FilesRemoved",
+   "ErrorMessage"
+  ],
+  "columns": [
+   "CleanupStatus",
+   "Message"
+  ]
+ },
+ "ret.usp_EndTable": {
+  "required": [
+   "TableLogId"
+  ],
+  "optional": [
+   "ErrorCode",
+   "ErrorStep",
+   "ErrorMessage"
+  ],
+  "columns": [
+   "TableLogId",
+   "FinalStatus",
+   "EligibleRows",
+   "RowsExported",
+   "RowsDeleted",
+   "ResumeRowsDeleted",
+   "OrphanRows",
+   "ArchiveFilesDeleted",
+   "ErrorCode",
+   "ErrorMessage",
+   "InitialCutoffStatus"
+  ]
+ },
+ "ret.usp_EndRun": {
+  "required": [
+   "RunId"
+  ],
+  "optional": [
+   "ErrorMessage",
+   "FailPipelineOnError"
+  ],
+  "columns": [
+   "RunId",
+   "ProcessType",
+   "RunDate",
+   "Status",
+   "TablesSelected",
+   "TablesSucceeded",
+   "TablesFailed",
+   "TablesSkipped",
+   "StartTime",
+   "EndTime"
+  ]
+ },
+ "ret.usp_GetRunArchiveFiles": {
+  "required": [
+   "TableLogId"
+  ],
+  "optional": [],
+  "columns": [
+   "BusinessDate",
+   "FolderPath",
+   "FileName",
+   "ExportStatus"
+  ]
+ }
 }

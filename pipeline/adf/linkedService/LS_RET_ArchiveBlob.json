@@ -3,7 +3,8 @@
     "properties": {
         "description": "Archive storage account. Authentication: ADF system-assigned managed identity with a container-scoped data role (Storage Blob Data Contributor) on the archive container (SEC-05). INT-02/INT-03.",
         "annotations": [
-            "FSD-DWH-RET-001 v0.2",
+            "FSD-DWH-RET v1.1",
+            "SQL v0.6",
             "DRAFT - not approved"
         ],
         "type": "AzureBlobStorage",

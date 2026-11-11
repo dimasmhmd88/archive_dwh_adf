@@ -394,8 +394,9 @@ def act_expr(pl, actname, path):
 
 print("\n--- scenario: StartRun (PL-01) ---")
 q = act_expr("PL_RET_01_InitialCutoff_Master", "LKP_StartRun", ["typeProperties", "source", "sqlReaderQuery"])
-for prm in [dict(TableConfigIdList="3,1", RunDate="", DowntimeReference="", TriggeredBy=""),
-            dict(TableConfigIdList="3,1", RunDate=" 2026-10-27 ", DowntimeReference="CR-0042", TriggeredBy="Dimas O'Neil")]:
+for prm in [dict(TableConfigIdList="3,1", RunDate="", DowntimeReference="", TriggeredBy="", ValidateOnly=False),
+            dict(TableConfigIdList="3,1", RunDate=" 2026-10-27 ", DowntimeReference="CR-0042", TriggeredBy="Dimas O'Neil", ValidateOnly=False),
+            dict(TableConfigIdList="", RunDate="", DowntimeReference="CR-0042", TriggeredBy="", ValidateOnly=True)]:
     print(evaluate(q, ctxm(prm)))
 print(evaluate(act_expr("PL_RET_02_DailyRoutine_Master", "LKP_StartRun", ["typeProperties", "source", "sqlReaderQuery"]),
                ctxm(dict(RunDate="", TriggeredBy=""), trig="ScheduleTrigger")))
@@ -432,8 +433,18 @@ q = act_expr("PL_RET_03_Table_Process", "EXEC_DataSteps", ["typeProperties", "pa
 for v in (None, 991):
     b = {"output": {"firstRow": {"TableLogId": 1, "PendingResumeTableLogId": v}}}
     print("PendingResumeTableLogId", v, "->", repr(evaluate(q, ctxm({}, acts={"LKP_BeginTable": b}))))
-q = act_expr("PL_RET_04_ArchiveExpiry", "EXEC_Level_Day", ["typeProperties", "parameters", "FolderPath"])
-print("DAY folder:", evaluate(q, ctxm({"BlobPath": "bos/jti_sd_branddistdetail", "ArchiveCutoffDate": "2018-10-31"})))
+q = act_expr("PL_RET_04_ArchiveExpiry", "EXEC_Level_File", ["typeProperties", "parameters", "FolderPath"])
+fp = evaluate(q, ctxm({"BlobPath": "bos.jti_sd_branddistdetail", "ArchiveCutoffDate": "2018-10-27"}))
+print("FILE level folder:", fp)
+if fp != "2018/bos.jti_sd_branddistdetail": err(f"PL_RET_04 FILE folder expected 2018/bos.jti_sd_branddistdetail, got {fp}")
+q = act_expr("PL_RET_04_ArchiveExpiry", "EXEC_Level_File", ["typeProperties", "parameters", "CutoffYear"])
+cy = evaluate(q, ctxm({"BlobPath": "x", "ArchiveCutoffDate": "2018-10-27"}))
+print("Cut-off year:", cy)
+if cy != 2018: err(f"PL_RET_04 CutoffYear expected 2018, got {cy}")
+q = act_expr("PL_RET_04A_ArchiveExpiry_Level", "DEL_ExpiredItem", ["typeProperties", "storeSettings", "wildcardFileName"])
+for it in ({"FolderPath": "2017/bos.t", "FileName": ""}, {"FolderPath": "2018/bos.t", "FileName": "bos.t_20181026.parquet"}):
+    c = ctxm({"Level": "YEAR"}); c["item"] = it
+    print("Delete wildcard:", it, "->", evaluate(q, c))
 
 print("\n--- scenario: export loop continue flag (PL-03E) ---")
 q = act_expr("PL_RET_03E_Export_BusinessDates", "SET_Continue_AfterOk", ["typeProperties", "value"])
@@ -444,7 +455,7 @@ for ce, rd in [(True, 4), (True, 0), (False, 3)]:
 print("\n--- scenario: expiry child items JSON (PL-04A) ---")
 q = act_expr("PL_RET_04A_ArchiveExpiry_Level", "LKP_GetExpiredArchiveFolders",
              ["typeProperties", "source", "storedProcedureParameters", "ChildItemsJson", "value"])
-for out in ({"exists": False}, {"exists": True, "childItems": [{"name": "year=2017", "type": "Folder"}]}):
+for out in ({"exists": False}, {"exists": True, "childItems": [{"name": "2017", "type": "Folder"}]}):
     v = evaluate(q, ctxm({}, acts={"GMD_ListChildItems": {"output": out}}))
     print(out.get("exists"), "->", v if isinstance(v, str) else json.dumps(v))
 

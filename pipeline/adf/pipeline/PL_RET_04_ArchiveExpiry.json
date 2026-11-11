@@ -1,7 +1,7 @@
 {
     "name": "PL_RET_04_ArchiveExpiry",
     "properties": {
-        "description": "PL-04 / PRC-04 / FR-013 (DR-05, BR-14): delete archive folders with business date before the archive cut-off date, traversing year=YYYY -> month=MM -> day=DD (MD-07, Figure 7). Folder paths of the cut-off year and month are derived from ArchiveCutoffDate; a missing folder is a no-op.",
+        "description": "FSD 4.13 / 5.4 / DR-05: delete archive data with business date before the archive cut-off, layout MD-07 <container>/<yyyy>/<BlobPath>/<BlobPath>_<yyyyMMdd>.parquet: level YEAR on the container root, then level FILE in the cut-off year. A missing folder is a no-op.",
         "activities": [
             {
                 "name": "EXEC_Level_Year",
@@ -23,25 +23,18 @@
                             "value": "@pipeline().parameters.ArchiveContainer",
                             "type": "Expression"
                         },
-                        "FolderPath": {
-                            "value": "@pipeline().parameters.BlobPath",
-                            "type": "Expression"
-                        },
+                        "FolderPath": "",
                         "Level": "YEAR",
                         "CutoffYear": {
                             "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4))",
                             "type": "Expression"
-                        },
-                        "CutoffMonth": {
-                            "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 5, 2))",
-                            "type": "Expression"
                         }
                     }
                 },
-                "description": "Year folders before the cut-off year are deleted whole."
+                "description": "Container root: folders <yyyy>/<BlobPath> of years before the archive cut-off year are deleted whole."
             },
             {
-                "name": "EXEC_Level_Month",
+                "name": "EXEC_Level_File",
                 "type": "ExecutePipeline",
                 "dependsOn": [
                     {
@@ -68,65 +61,17 @@
                             "type": "Expression"
                         },
                         "FolderPath": {
-                            "value": "@concat(pipeline().parameters.BlobPath, '/year=', substring(pipeline().parameters.ArchiveCutoffDate, 0, 4))",
+                            "value": "@concat(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4), '/', pipeline().parameters.BlobPath)",
                             "type": "Expression"
                         },
-                        "Level": "MONTH",
+                        "Level": "FILE",
                         "CutoffYear": {
                             "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4))",
-                            "type": "Expression"
-                        },
-                        "CutoffMonth": {
-                            "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 5, 2))",
                             "type": "Expression"
                         }
                     }
                 },
-                "description": "Inside the cut-off year: month folders before the cut-off month."
-            },
-            {
-                "name": "EXEC_Level_Day",
-                "type": "ExecutePipeline",
-                "dependsOn": [
-                    {
-                        "activity": "EXEC_Level_Month",
-                        "dependencyConditions": [
-                            "Completed"
-                        ]
-                    }
-                ],
-                "userProperties": [],
-                "typeProperties": {
-                    "pipeline": {
-                        "referenceName": "PL_RET_04A_ArchiveExpiry_Level",
-                        "type": "PipelineReference"
-                    },
-                    "waitOnCompletion": true,
-                    "parameters": {
-                        "TableLogId": {
-                            "value": "@pipeline().parameters.TableLogId",
-                            "type": "Expression"
-                        },
-                        "ArchiveContainer": {
-                            "value": "@pipeline().parameters.ArchiveContainer",
-                            "type": "Expression"
-                        },
-                        "FolderPath": {
-                            "value": "@concat(pipeline().parameters.BlobPath, '/year=', substring(pipeline().parameters.ArchiveCutoffDate, 0, 4), '/month=', substring(pipeline().parameters.ArchiveCutoffDate, 5, 2))",
-                            "type": "Expression"
-                        },
-                        "Level": "DAY",
-                        "CutoffYear": {
-                            "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4))",
-                            "type": "Expression"
-                        },
-                        "CutoffMonth": {
-                            "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 5, 2))",
-                            "type": "Expression"
-                        }
-                    }
-                },
-                "description": "Inside the cut-off month: day folders before the cut-off day."
+                "description": "Folder <archive cut-off year>/<BlobPath>: files dated before the archive cut-off are deleted."
             }
         ],
         "parameters": {
@@ -148,7 +93,8 @@
             "name": "DWH Retention/Internal"
         },
         "annotations": [
-            "FSD-DWH-RET-001 v0.2",
+            "FSD-DWH-RET v1.1",
+            "SQL v0.6",
             "DRAFT - not approved"
         ]
     }

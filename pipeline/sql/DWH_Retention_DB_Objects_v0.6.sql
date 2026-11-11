@@ -1,15 +1,40 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - Database Objects (schema ret)
    -------------------------------------------------------------------------------------
-   Script        : DWH_Retention_DB_Objects_v0.5.sql (consolidated = v0.4 + v0.5 patch)
-   Script ver.   : 0.5.1 (DRAFT - not reviewed, not executed against any database)
-   Date          : 1 November 2026 (v0.4: 30 October 2026; v0.5 patch: 31 October 2026)
-   Sources       : FSD-DWH-RET-001 v0.2 (30 Oct 2026, Draft for Review - NOT approved)
-                   Design table workbook v0.2 (design table v0.2.xlsx)
-                   BRD-DWH-RET-001 v0.1 (29 Oct 2026, approval status inconsistent - FSD OQ-01)
-   Target        : Azure SQL Database, DWH database, schema ret (BRD C-05, MD-02).
+   Script        : DWH_Retention_DB_Objects_v0.6.sql (consolidated; replaces v0.5.1 and the v0.5 patch)
+   Script ver.   : 0.6 (DRAFT - not reviewed, not executed against any database)
+   Date          : 11 November 2026 (v0.4: 30 Oct 2026; v0.5: 31 Oct 2026; v0.5.1: 1 Nov 2026)
+   Sources       : FSD_DWH_Data_Retention_v1.1 (FSD-DWH-RET v1.1, 10 Nov 2026, Draft for Review - NOT approved)
+                   Decisions D-1..D-4 of the review "pipeline-agus vs FSD v1.1" (11 Nov 2026, given by the user)
+                   Earlier: FSD-DWH-RET-001 v0.2, design table v0.2, BRD-DWH-RET-001 v0.1
+   Target        : Azure SQL Database, DWH database, schema ret (FSD MD-01, MD-02).
                    Requires database compatibility level >= 130 (CREATE OR ALTER, STRING_AGG,
                    STRING_SPLIT with ordinal, OPENJSON).
+   NOTE          : Requirement references in older comments (FR-0nn, BRQ-nn, DBR-nn, PRC-nn) use the
+                   numbering of FSD v0.2. FSD v1.1 references are given as section numbers (4.x).
+
+   CHANGES IN v0.6 (11 November 2026) - alignment with FSD v1.1
+   - MD-07 archive layout (FSD 3.4, 4.7, 8): <container>/<yyyy>/<BlobPath>/<BlobPath>_<yyyyMMdd>.parquet,
+     BlobPath = <schema>.<table> in lower case (no slash), container dwh-archive. fn_ArchiveFolderPath and
+     fn_ArchiveFileName have the FSD signatures (@BlobPath, @BusinessDate); the RunId is no longer part of
+     the file name (it stays in ret.RetentionArchiveDate). Check CK_RetentionConfig_BlobPath and V-06 reject
+     a slash; migration (h) converts slash paths of tables without any archive file.
+   - Decision D-1 (FSD 4.17): usp_IdentifyEligibleData refuses a business date for which an archive file of an
+     earlier run of the same table may still exist (ExportStatus SUCCEEDED, FAILED or STOPPED in
+     ret.RetentionArchiveDate): ERR-EXP-02, table FAILED, nothing exported or deleted; manual handling.
+   - FSD 4.18: new procedure usp_GetRunArchiveFiles (files of one table log to delete after a failure);
+     PL_RET_03F deletes exactly these files.
+   - FSD 4.13: usp_GetExpiredArchiveFolders works on level YEAR (container root: folders <yyyy>/<BlobPath> of
+     years before the archive cut-off year) and FILE (folder <cut-off year>/<BlobPath>: files dated before the
+     archive cut-off). Parameters @Level ('YEAR' | 'FILE') and @Year; result FolderPath, FileName, Action.
+   - MD-08 / FSD 4.24: column ret.RetentionConfig.LogRetentionYears (default 3, >= 1, V-05). usp_EndTable (Daily
+     Routine) deletes log records of the table older than RunDate - LogRetentionYears; usp_EndRun deletes old
+     run-level records no longer referenced. Rows still needed are kept: validated ranges not fully deleted,
+     runs referenced by ret.RetentionTableStatus and [v0.6 addition, FSD update needed] archive inventory rows
+     of files that are not yet expired (needed by the D-1 check).
+   - FSD 4.15: monitoring views ret.vw_MQ01_LatestRuns .. ret.vw_MQ06_LocksAndRebuildTables (section 9b).
+   - Decision D-3 (dry validation, option A): VALIDATION with an EMPTY table list = all active tables not
+     COMPLETED; a VALIDATION run never drops leftover rebuild tables (reported as a warning only).
 
    CHANGES IN v0.5.1 (1 November 2026) - collation fix, no functional change
    - Error "Cannot resolve collation conflict for string_agg operation" on Azure SQL Database when the
@@ -61,9 +86,9 @@
        RB-09 identity reseed and view refresh, RB-10 definition check),
        ret.usp_TableRebuildAbort (drop the new table, revoke validation, request file cleanup).
        Parameter KeepRebuildStagingTable removed.
-   - MD-07 archive layout: <container>/<BlobPath>/year=YYYY/month=MM/day=DD/<file>; BlobPath lower
+   - [v0.4, superseded in v0.6] MD-07 archive layout: <container>/<BlobPath>/year=YYYY/month=MM/day=DD/<file>; BlobPath lower
        case; ArchiveContainer = container name only (check constraint, no default);
-       ret.usp_GetExpiredArchiveFolders works per level YEAR / MONTH / DAY.
+       ret.usp_GetExpiredArchiveFolders works per level YEAR / MONTH / DAY (v0.6: YEAR / FILE).
    - Design table alignment: DatabaseName column removed (design table, MD-02, FSD DV-01);
        parameters TableParallelism and ExportDateParallelism removed (not in design table,
        FSD DEC-07 sequential processing); new column ret.RetentionTableLog.OrphanRows;
@@ -94,6 +119,7 @@
    ADF CALL SEQUENCE PER TABLE (contract between pipelines and procedures)
    ===================================================================================
      Run   : usp_StartRun -> usp_GetTablesToProcess -> [per table, in ProcessingOrder] -> usp_EndRun
+             (ProcessType VALIDATION = dry validation: step 1 and 11 only, nothing is changed - D-3)
      Table : 1 usp_BeginTable           BeginResult PROCEED / SKIPPED / FAILED; CanRunArchiveExpiry
              2 while PendingResumeTableLogId is not NULL: usp_BatchDelete(@TableLogId = that id),
                         then usp_BeginTable result is re-read with usp_GetPendingResume
@@ -108,14 +134,16 @@
              6 usp_ValidateArchive (RB-07)  7 usp_TableRebuildSwap (RB-07..RB-10)
              8 on any failure before step 7 commits: usp_TableRebuildAbort
              BOTH:
-             9 DR only, when CanRunArchiveExpiry = 1 (also when BeginResult = SKIPPED by DBR-19):
-                        per level YEAR -> MONTH -> DAY: Get Metadata (child items) ->
-                        usp_GetExpiredArchiveFolders(@Level, @Year, @Month) -> Delete folders with
-                        Action = DELETE -> list folders with Action = DESCEND one level lower ->
+             9 DR only, when CanRunArchiveExpiry = 1 (also when BeginResult = SKIPPED by DBR-19), v0.6:
+                        level YEAR: Get Metadata childItems of the container root ->
+                        usp_GetExpiredArchiveFolders(@Level = 'YEAR') -> per item: folder exists? -> Delete
+                        folder <yyyy>/<BlobPath> -> usp_LogExpiredArchiveResult;
+                        level FILE: Get Metadata of <cut-off year>/<BlobPath> ->
+                        usp_GetExpiredArchiveFolders(@Level = 'FILE', @Year) -> Delete each file ->
                         usp_LogExpiredArchiveResult
-            10 if any result returns CleanupRequired = 1: delete files *_<RunId>.parquet of this
-                        table -> usp_LogCleanupResult
-            11 usp_EndTable (always, also on ADF failure paths with the activity error)
+            10 if any result returns CleanupRequired = 1 (v0.6): usp_GetRunArchiveFiles -> per file:
+                        exists? -> Delete <FolderPath>/<FileName> -> usp_LogCleanupResult
+            11 usp_EndTable (always, also on ADF failure paths with the activity error; DR: log retention)
 
    DEPLOYMENT NOTES
    - Run the whole script connected to the DWH database. Re-runnable: tables are created when
@@ -202,6 +230,7 @@ BEGIN
         ParentTableConfigId     INT             NULL,
         DwhRetentionYears       SMALLINT        NOT NULL CONSTRAINT DF_RetentionConfig_DwhYears   DEFAULT (3),
         BlobRetentionYears      SMALLINT        NOT NULL CONSTRAINT DF_RetentionConfig_BlobYears  DEFAULT (5),
+        LogRetentionYears       SMALLINT        NOT NULL CONSTRAINT DF_RetentionConfig_LogYears   DEFAULT (3),   -- MD-08
         BlobPath                NVARCHAR(400)   NOT NULL,
         InitialCutoffMethod     VARCHAR(20)     NOT NULL,
         IsActive                BIT             NOT NULL CONSTRAINT DF_RetentionConfig_IsActive   DEFAULT (1),
@@ -216,15 +245,15 @@ BEGIN
         CONSTRAINT FK_RetentionConfig_Parent   FOREIGN KEY (ParentTableConfigId) REFERENCES ret.RetentionConfig (TableConfigId),
         CONSTRAINT CK_RetentionConfig_DwhYears   CHECK (DwhRetentionYears >= 1),
         CONSTRAINT CK_RetentionConfig_BlobYears  CHECK (BlobRetentionYears >= 1),
+        CONSTRAINT CK_RetentionConfig_LogYears   CHECK (LogRetentionYears >= 1),
         CONSTRAINT CK_RetentionConfig_Method     CHECK (InitialCutoffMethod IN ('BATCH_DELETE', 'TABLE_REBUILD')),
         CONSTRAINT CK_RetentionConfig_Size       CHECK (SizeCategory IN ('SMALL', 'MEDIUM', 'LARGE')),
         CONSTRAINT CK_RetentionConfig_DateSource CHECK ((RetentionColumn IS NOT NULL AND ParentTableConfigId IS NULL)
                                                      OR (RetentionColumn IS NULL AND ParentTableConfigId IS NOT NULL)),
         CONSTRAINT CK_RetentionConfig_NotSelf    CHECK (ParentTableConfigId IS NULL OR ParentTableConfigId <> TableConfigId),
         CONSTRAINT CK_RetentionConfig_Names      CHECK (LEN(SchemaName) > 0 AND LEN(TableName) > 0 AND (RetentionColumn IS NULL OR LEN(RetentionColumn) > 0)),
-        -- <schema>/<table> in lower case, no leading/trailing slash (MD-07)
-        CONSTRAINT CK_RetentionConfig_BlobPath   CHECK (LEN(BlobPath) > 0 AND BlobPath NOT LIKE N'/%' AND BlobPath NOT LIKE N'%/'
-                                                     AND BlobPath NOT LIKE N'%//%' AND BlobPath NOT LIKE N'%\%'
+        -- <schema>.<table> in lower case, no slash or backslash (MD-07, FSD 7.2)
+        CONSTRAINT CK_RetentionConfig_BlobPath   CHECK (LEN(BlobPath) > 0 AND BlobPath NOT LIKE N'%/%' AND BlobPath NOT LIKE N'%\%'
                                                      AND BlobPath COLLATE Latin1_General_100_BIN2 = LOWER(BlobPath) COLLATE Latin1_General_100_BIN2)
     );
 
@@ -438,8 +467,8 @@ BEGIN
         RowsRead            BIGINT          NULL,
         RowsWritten         BIGINT          NULL,
         FileCount           INT             NULL,
-        FolderPath          NVARCHAR(1024)  NOT NULL,       -- <BlobPath>/year=YYYY/month=MM/day=DD (MD-07)
-        FileName            NVARCHAR(400)   NOT NULL,       -- <schema>_<table>_<yyyyMMdd>_<RunId>.parquet
+        FolderPath          NVARCHAR(1024)  NOT NULL,       -- <yyyy>/<BlobPath> (MD-07, v0.6)
+        FileName            NVARCHAR(400)   NOT NULL,       -- <BlobPath>_<yyyyMMdd>.parquet (MD-07, v0.6)
         ExportStatus        VARCHAR(10)     NOT NULL CONSTRAINT DF_RetentionArchiveDate_ExportStatus DEFAULT ('PENDING'),
         ValidationResult    VARCHAR(10)     NULL,
         ExportStartTime     DATETIME2(3)    NULL,
@@ -565,24 +594,37 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'ret.Reten
     CREATE NONCLUSTERED INDEX IX_RetentionConfig_Parent ON ret.RetentionConfig (ParentTableConfigId) WHERE ParentTableConfigId IS NOT NULL;
 GO
 
--- (d) BlobPath lower case (MD-07). Existing upper-case paths must be corrected (and their archive
---     folders moved) before the constraint can be added: the block reports them and stops.
+-- (d) BlobPath = <schema>.<table> in lower case without slash (MD-07 as decided 10 Nov 2026, FSD 7.2).
+--     Paths of tables without any archive file and with Initial Cut-off status PENDING are converted
+--     automatically ('/' -> '.', lower case). Other non-conforming paths are reported and the block stops:
+--     they must be corrected manually together with their archive folders.
 IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID(N'ret.RetentionConfig')
-               AND name = N'CK_RetentionConfig_BlobPath' AND definition LIKE N'%LOWER%')
+               AND name = N'CK_RetentionConfig_BlobPath' AND definition LIKE N'%LOWER%' AND definition LIKE N'%[%]/[%]%')
 BEGIN
+    UPDATE c
+       SET BlobPath = LOWER(REPLACE(c.BlobPath, N'/', N'.'))
+      FROM ret.RetentionConfig AS c
+      LEFT JOIN ret.RetentionTableStatus AS s ON s.TableConfigId = c.TableConfigId
+     WHERE (CHARINDEX(N'/', c.BlobPath) > 0
+            OR c.BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(c.BlobPath) COLLATE Latin1_General_100_BIN2)
+       AND ISNULL(s.InitialCutoffStatus, 'PENDING') = 'PENDING'
+       AND NOT EXISTS (SELECT 1 FROM ret.RetentionArchiveDate AS a WHERE a.TableConfigId = c.TableConfigId)
+       AND NOT EXISTS (SELECT 1 FROM ret.RetentionTableLog AS l WHERE l.TableConfigId = c.TableConfigId AND l.IsValidated = 1);
+
     IF EXISTS (SELECT 1 FROM ret.RetentionConfig
-               WHERE BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(BlobPath) COLLATE Latin1_General_100_BIN2)
+               WHERE CHARINDEX(N'/', BlobPath) > 0 OR CHARINDEX(N'\', BlobPath) > 0
+                  OR BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(BlobPath) COLLATE Latin1_General_100_BIN2)
     BEGIN
         SELECT TableConfigId, SchemaName, TableName, BlobPath FROM ret.RetentionConfig
-        WHERE BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(BlobPath) COLLATE Latin1_General_100_BIN2;
-        RAISERROR (N'Migration stopped: BlobPath values with upper-case letters exist (MD-07). Correct them first.', 16, 1);
+        WHERE CHARINDEX(N'/', BlobPath) > 0 OR CHARINDEX(N'\', BlobPath) > 0
+           OR BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(BlobPath) COLLATE Latin1_General_100_BIN2;
+        RAISERROR (N'Migration stopped: BlobPath values with a slash or upper-case letters exist for tables with archive files (MD-07). Correct them and their archive folders first.', 16, 1);
     END
     ELSE
     BEGIN
         IF OBJECT_ID(N'ret.CK_RetentionConfig_BlobPath', N'C') IS NOT NULL
             ALTER TABLE ret.RetentionConfig DROP CONSTRAINT CK_RetentionConfig_BlobPath;
-        ALTER TABLE ret.RetentionConfig ADD CONSTRAINT CK_RetentionConfig_BlobPath CHECK (LEN(BlobPath) > 0 AND BlobPath NOT LIKE N'/%' AND BlobPath NOT LIKE N'%/'
-            AND BlobPath NOT LIKE N'%//%' AND BlobPath NOT LIKE N'%\%'
+        ALTER TABLE ret.RetentionConfig ADD CONSTRAINT CK_RetentionConfig_BlobPath CHECK (LEN(BlobPath) > 0 AND BlobPath NOT LIKE N'%/%' AND BlobPath NOT LIKE N'%\%'
             AND BlobPath COLLATE Latin1_General_100_BIN2 = LOWER(BlobPath) COLLATE Latin1_General_100_BIN2);
     END;
 END;
@@ -625,6 +667,14 @@ GO
 -- (g) v0.3 procedure replaced by usp_TableRebuildPrepare / Swap / Abort
 IF OBJECT_ID(N'ret.usp_TableRebuild', N'P') IS NOT NULL
     DROP PROCEDURE ret.usp_TableRebuild;
+GO
+
+-- (h) v0.5 -> v0.6: log retention per table (MD-08, FSD 4.24)
+IF COL_LENGTH(N'ret.RetentionConfig', N'LogRetentionYears') IS NULL
+    ALTER TABLE ret.RetentionConfig ADD LogRetentionYears SMALLINT NOT NULL CONSTRAINT DF_RetentionConfig_LogYears DEFAULT (3);
+GO
+IF OBJECT_ID(N'ret.CK_RetentionConfig_LogYears', N'C') IS NULL
+    ALTER TABLE ret.RetentionConfig ADD CONSTRAINT CK_RetentionConfig_LogYears CHECK (LogRetentionYears >= 1);
 GO
 
 /* =====================================================================================
@@ -719,7 +769,7 @@ USING (VALUES
     ('ERR-CFG-02', N'Configuration / metadata', N'V-02: retention column does not exist', 0),
     ('ERR-CFG-03', N'Configuration / metadata', N'V-03: retention column is not date, datetime, datetime2 or smalldatetime', 0),
     ('ERR-CFG-04', N'Configuration / metadata', N'V-04: retention column contains NULL values', 0),
-    ('ERR-CFG-05', N'Configuration / metadata', N'V-05: invalid retention periods (DBR-01)', 0),
+    ('ERR-CFG-05', N'Configuration / metadata', N'V-05: invalid retention periods (DWH, archive or log retention years < 1)', 0),
     ('ERR-CFG-06', N'Configuration / metadata', N'V-06: blob path or archive container missing or invalid', 0),
     ('ERR-CFG-07', N'Configuration / metadata', N'V-07: table not eligible for this run (inactive, completed, gates DBR-05, DBR-18, DBR-19)', 0),
     ('ERR-CFG-08', N'Configuration / metadata', N'V-08: column type or column name not supported by the Parquet format', 0),
@@ -731,7 +781,7 @@ USING (VALUES
     ('ERR-SYS-01', N'Database / connectivity',  N'Query, procedure or connection failure', 0),
     ('ERR-SYS-02', N'Run date',                 N'Run date later than the current UTC+7 date', 0),
     ('ERR-EXP-01', N'Export',                   N'Copy activity failed after retries', 0),
-    ('ERR-EXP-02', N'Export',                   N'Target archive file already exists', 0),
+    ('ERR-EXP-02', N'Export',                   N'Archive file for this table and business date may already exist from an earlier run (decision D-1): date refused, table FAILED, manual handling', 0),
     ('ERR-EXP-03', N'Export cleanup',           N'Files written by the failed run could not be removed (orphan files)', 0),
     ('ERR-VAL-01', N'Validation',               N'Per-date or total row-count mismatch between DWH and Parquet', 0),
     ('ERR-VAL-02', N'Validation',               N'Recount differs from the validated total', 0),
@@ -817,7 +867,7 @@ BEGIN
 END;
 GO
 
--- Archive folder <BlobPath>/year=YYYY/month=MM/day=DD (MD-07)
+-- Archive folder <yyyy>/<BlobPath> (MD-07, FSD 4.7): one folder per year of the business date, then one per table
 CREATE OR ALTER FUNCTION ret.fn_ArchiveFolderPath
 (
     @BlobPath       NVARCHAR(400),
@@ -826,24 +876,21 @@ CREATE OR ALTER FUNCTION ret.fn_ArchiveFolderPath
 RETURNS NVARCHAR(1024)
 AS
 BEGIN
-    DECLARE @d NCHAR(8) = CONVERT(NCHAR(8), @BusinessDate, 112);   -- yyyyMMdd
-    RETURN @BlobPath + N'/year=' + SUBSTRING(@d, 1, 4) + N'/month=' + SUBSTRING(@d, 5, 2) + N'/day=' + SUBSTRING(@d, 7, 2);
+    RETURN CONVERT(NCHAR(4), YEAR(@BusinessDate)) + N'/' + @BlobPath;
 END;
 GO
 
--- Archive file name with RunId; never overwritten (DBR-07)
+-- Archive file name <BlobPath>_<yyyyMMdd>.parquet (MD-07, FSD 4.7). The RunId is recorded in
+-- ret.RetentionArchiveDate; an existing file of an earlier run is never overwritten (decision D-1).
 CREATE OR ALTER FUNCTION ret.fn_ArchiveFileName
 (
-    @SchemaName     SYSNAME,
-    @TableName      SYSNAME,
-    @BusinessDate   DATE,
-    @RunId          BIGINT
+    @BlobPath       NVARCHAR(400),
+    @BusinessDate   DATE
 )
 RETURNS NVARCHAR(400)
 AS
 BEGIN
-    RETURN @SchemaName + N'_' + @TableName + N'_' + CONVERT(NCHAR(8), @BusinessDate, 112)
-         + N'_' + CONVERT(NVARCHAR(20), @RunId) + N'.parquet';
+    RETURN @BlobPath + N'_' + CONVERT(NCHAR(8), @BusinessDate, 112) + N'.parquet';
 END;
 GO
 
@@ -1308,7 +1355,8 @@ GO
                        every active table not COMPLETED, SMALL/MEDIUM before LARGE, child first,
                        then TableConfigId. Gates as in v0.4 (inactive, completed, running, DBR-05,
                        DBR-18, downtime reference); not eligible tables are logged SKIPPED (ERR-CFG-07).
-       VALIDATION    : listed tables, any status (list required). */
+       VALIDATION    : listed tables, any status; EMPTY list = all active tables not COMPLETED, in the
+                       automatic order (v0.6, decision D-3). */
 CREATE OR ALTER PROCEDURE ret.usp_GetTablesToProcess
     @RunId              BIGINT,
     @TableConfigIdList  NVARCHAR(MAX) = NULL
@@ -1379,12 +1427,8 @@ BEGIN
     BEGIN
         IF NULLIF(LTRIM(RTRIM(@TableConfigIdList)), N'') IS NULL
         BEGIN
-            IF @ProcessType = 'VALIDATION'
-            BEGIN
-                ;THROW 50113, N'@TableConfigIdList is required for VALIDATION runs.', 1;
-            END;
-
-            /* ---- CR-01 automatic mode (INITIAL_CUTOFF): all active tables not yet COMPLETED ---- */
+            /* ---- CR-01 automatic mode (INITIAL_CUTOFF) and dry validation (VALIDATION, D-3):
+                    all active tables not yet COMPLETED ---- */
             SET @IsAutoMode = 1;
 
             INSERT INTO #List (TableConfigId, Ord)
@@ -1514,7 +1558,8 @@ BEGIN
             @ErrCode VARCHAR(12), @ErrMsg NVARCHAR(4000), @CheckCode VARCHAR(4), @Holder BIGINT,
             @CanExpiry BIT = 0, @NullCount BIGINT = 0, @NullMode VARCHAR(10), @NullCheckNote NVARCHAR(400),
             @sql NVARCHAR(MAX), @BadList NVARCHAR(MAX), @Gate NVARCHAR(400), @StaleLogId BIGINT, @ErrNo INT,
-            @ResumeLogId BIGINT, @ResumeRunId BIGINT, @ResumeCount INT = 0, @Uniq TINYINT;
+            @ResumeLogId BIGINT, @ResumeRunId BIGINT, @ResumeCount INT = 0, @Uniq TINYINT, @LogYears SMALLINT,
+            @StaleNote NVARCHAR(400);
 
     SELECT @ProcessType = ProcessType, @RunDate = RunDate, @RunStatus = Status
     FROM ret.RetentionRunLog WHERE RunId = @RunId;
@@ -1525,7 +1570,8 @@ BEGIN
     END;
 
     SELECT @SchemaName = SchemaName, @TableName = TableName, @ParentId = ParentTableConfigId,
-           @DwhYears = DwhRetentionYears, @BlobYears = BlobRetentionYears, @BlobPath = BlobPath
+           @DwhYears = DwhRetentionYears, @BlobYears = BlobRetentionYears, @BlobPath = BlobPath,
+           @LogYears = LogRetentionYears
     FROM ret.RetentionConfig WHERE TableConfigId = @TableConfigId;
 
     IF @SchemaName IS NULL
@@ -1621,19 +1667,18 @@ BEGIN
              WHERE TableConfigId = @TableConfigId;
 
         /* ---- V-05 retention periods ---- */
-        IF NOT (@DwhYears >= 1 AND @BlobYears >= 1)
+        IF NOT (@DwhYears >= 1 AND @BlobYears >= 1 AND @LogYears >= 1)
             SELECT @ErrCode = 'ERR-CFG-05', @CheckCode = 'V-05',
-                   @ErrMsg = N'DWH retention and Blob retention must each be >= 1 year (DBR-01).';
+                   @ErrMsg = N'DWH, archive and log retention must each be >= 1 year (FSD 4.1, V-05).';
 
         /* ---- V-06 blob path and archive container (MD-07) ---- */
         IF @ErrCode IS NULL
            AND (   NULLIF(@BlobPath, N'') IS NULL
-                OR LEFT(@BlobPath, 1) = N'/' OR RIGHT(@BlobPath, 1) = N'/'
-                OR CHARINDEX(N'//', @BlobPath) > 0 OR CHARINDEX(N'\', @BlobPath) > 0
+                OR CHARINDEX(N'/', @BlobPath) > 0 OR CHARINDEX(N'\', @BlobPath) > 0
                 OR @BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(@BlobPath) COLLATE Latin1_General_100_BIN2
                 OR EXISTS (SELECT 1 FROM ret.RetentionConfig WHERE BlobPath = @BlobPath AND TableConfigId <> @TableConfigId))
             SELECT @ErrCode = 'ERR-CFG-06', @CheckCode = 'V-06',
-                   @ErrMsg = N'Blob path missing, not lower case, malformed or not unique (MD-07).';
+                   @ErrMsg = N'BlobPath missing, not <schema>.<table> in lower case without slash, or not unique (MD-07).';
 
         IF @ErrCode IS NULL AND NULLIF(@Container, N'') IS NULL
             SELECT @ErrCode = 'ERR-CFG-06', @CheckCode = 'V-06',
@@ -1706,8 +1751,20 @@ BEGIN
         END;
 
         /* ---- Interrupted table rebuild of an earlier run (MD-06): drop the new table, revoke the
-                validation; the files of that run remain and are flagged as orphan files ---- */
-        IF @ErrCode IS NULL
+                validation; the files of that run remain and are flagged as orphan files.
+                VALIDATION run (decision D-3): nothing is changed, the leftover is only reported. ---- */
+        IF @ErrCode IS NULL AND @ProcessType = 'VALIDATION'
+           AND EXISTS (SELECT 1 FROM ret.RetentionTableLog AS l
+                       WHERE l.TableConfigId = @TableConfigId AND l.TableLogId <> @TableLogId
+                         AND l.MethodUsed = 'TABLE_REBUILD' AND l.DeleteStatus <> 'COMPLETED'
+                         AND (l.RebuildStagingTable IS NOT NULL OR l.IsValidated = 1))
+        BEGIN
+            SET @StaleNote = N'Unfinished table rebuild of an earlier run found; the next Initial Cut-off Run of this table drops the leftover new table and flags its archive files as orphan files (not changed by this VALIDATION run).';
+            EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'VALIDATE', @Status = 'WARNING',
+                 @TableLogId = @TableLogId, @TableConfigId = @TableConfigId, @StartTime = @Now, @Message = @StaleNote;
+        END;
+
+        IF @ErrCode IS NULL AND @ProcessType <> 'VALIDATION'
         BEGIN
             SELECT TOP (1) @StaleLogId = l.TableLogId
             FROM ret.RetentionTableLog AS l
@@ -1859,7 +1916,11 @@ GO
            DailyNullCheckMode = FULL.
        Child table: business date = date of the header row (FR-023). Orphan child rows are never
        eligible; they are counted and reported with warning ERR-PAR-01 (DBR-21).
-       NextAction: EXPORT, VALIDATE (IC: expired rows only, DBR-03) or NONE. */
+       NextAction: EXPORT, VALIDATE (IC: expired rows only, DBR-03) or NONE.
+       v0.6 decision D-1 (FSD 4.17): a business date on or after the archive cut-off for which an archive
+       file of an earlier run of the same table may exist (ExportStatus SUCCEEDED, FAILED or STOPPED, i.e.
+       not REMOVED) is refused: ERR-EXP-02, table FAILED, snapshot removed, nothing exported or deleted.
+       Dates before the archive cut-off are not checked: their files are expired and removed by DR-05. */
 CREATE OR ALTER PROCEDURE ret.usp_IdentifyEligibleData
     @TableLogId BIGINT
 WITH EXECUTE AS OWNER
@@ -1874,7 +1935,8 @@ BEGIN
             @IsChild BIT, @DateExpr NVARCHAR(400), @FromSql NVARCHAR(MAX), @OrphanExpr NVARCHAR(400),
             @ErrCode VARCHAR(12), @CheckCode VARCHAR(4), @sql NVARCHAR(MAX), @NullMode VARCHAR(10),
             @ToExport BIGINT = 0, @Expired BIGINT = 0, @Retained BIGINT = NULL, @Orphans BIGINT = NULL, @Eligible BIGINT = 0,
-            @DateCount INT = 0, @MinDate DATE, @MaxDate DATE, @NextAction VARCHAR(10), @Msg NVARCHAR(4000), @ErrNo INT;
+            @DateCount INT = 0, @MinDate DATE, @MaxDate DATE, @NextAction VARCHAR(10), @Msg NVARCHAR(4000), @ErrNo INT,
+            @ExistCount INT, @ExistDates NVARCHAR(4000);
 
     SELECT @RunId = l.RunId, @TableConfigId = l.TableConfigId, @ProcessType = l.ProcessType, @Status = l.Status,
            @DwhCutoff = l.DwhCutoffDate, @ArchiveCutoff = l.ArchiveCutoffDate,
@@ -1915,7 +1977,7 @@ BEGIN
         SET @sql = N'INSERT INTO ret.RetentionArchiveDate (TableLogId, BusinessDate, RunId, TableConfigId, ExpectedRows, FolderPath, FileName)
 SELECT @TableLogId, d.BusinessDate, @RunId, @TableConfigId, d.RowCnt,
        ret.fn_ArchiveFolderPath(@BlobPath, d.BusinessDate),
-       ret.fn_ArchiveFileName(@SchemaName, @TableName, d.BusinessDate, @RunId)
+       ret.fn_ArchiveFileName(@BlobPath, d.BusinessDate)
 FROM (SELECT CAST(' + @DateExpr + N' AS DATE) AS BusinessDate, COUNT_BIG(*) AS RowCnt' + @FromSql + N'
       WHERE ' + @DateExpr + N' < @DwhCutoff'
             + CASE WHEN @ProcessType = 'INITIAL_CUTOFF' THEN N' AND ' + @DateExpr + N' >= @ArchiveCutoff' ELSE N'' END + N'
@@ -1925,6 +1987,44 @@ FROM (SELECT CAST(' + @DateExpr + N' AS DATE) AS BusinessDate, COUNT_BIG(*) AS R
              N'@TableLogId BIGINT, @RunId BIGINT, @TableConfigId INT, @BlobPath NVARCHAR(400), @SchemaName SYSNAME, @TableName SYSNAME, @DwhCutoff DATE, @ArchiveCutoff DATE',
              @TableLogId = @TableLogId, @RunId = @RunId, @TableConfigId = @TableConfigId, @BlobPath = @BlobPath,
              @SchemaName = @SchemaName, @TableName = @TableName, @DwhCutoff = @DwhCutoff, @ArchiveCutoff = @ArchiveCutoff;
+
+        /* ---- Decision D-1: never overwrite an archive file of an earlier run (FSD 4.17, ERR-EXP-02) ---- */
+        SELECT @ExistCount = COUNT(*)
+        FROM ret.RetentionArchiveDate AS a
+        WHERE a.TableLogId = @TableLogId AND a.BusinessDate >= @ArchiveCutoff
+          AND EXISTS (SELECT 1 FROM ret.RetentionArchiveDate AS e
+                      WHERE e.TableConfigId = a.TableConfigId AND e.BusinessDate = a.BusinessDate
+                        AND e.TableLogId <> a.TableLogId AND e.ExportStatus IN ('SUCCEEDED', 'FAILED', 'STOPPED'));
+
+        IF @ExistCount > 0
+        BEGIN
+            SELECT @ExistDates = STRING_AGG(CONVERT(NVARCHAR(MAX), x.Info) COLLATE DATABASE_DEFAULT, N', ')
+            FROM (SELECT TOP (20) CONCAT(CONVERT(CHAR(10), a.BusinessDate, 23), N' (RunId ', MAX(e.RunId), N')') AS Info
+                  FROM ret.RetentionArchiveDate AS a
+                  JOIN ret.RetentionArchiveDate AS e
+                    ON e.TableConfigId = a.TableConfigId AND e.BusinessDate = a.BusinessDate
+                   AND e.TableLogId <> a.TableLogId AND e.ExportStatus IN ('SUCCEEDED', 'FAILED', 'STOPPED')
+                  WHERE a.TableLogId = @TableLogId AND a.BusinessDate >= @ArchiveCutoff
+                  GROUP BY a.BusinessDate
+                  ORDER BY a.BusinessDate) AS x;
+
+            DELETE FROM ret.RetentionArchiveDate WHERE TableLogId = @TableLogId;
+
+            SET @Msg = LEFT(CONCAT(N'Archive file already exists from an earlier run for ', @ExistCount,
+                                   N' business date(s) with rows still in the DWH (back-dated rows?): ', @ExistDates,
+                                   CASE WHEN @ExistCount > 20 THEN N', ...' ELSE N'' END,
+                                   N'. Nothing exported or deleted; manual handling required (decision D-1).'), 4000);
+            EXEC ret.usp_SetTableError @TableLogId = @TableLogId, @ErrorCode = 'ERR-EXP-02', @ErrorStep = 'COUNT', @ErrorMessage = @Msg;
+            EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'COUNT', @Status = 'FAILED',
+                 @TableLogId = @TableLogId, @TableConfigId = @TableConfigId, @StartTime = @Now,
+                 @ErrorCode = 'ERR-EXP-02', @ErrorMessage = @Msg;
+
+            SELECT @TableLogId AS TableLogId, 'FAILED' AS Result, 'NONE' AS NextAction,
+                   CAST(NULL AS BIGINT) AS EligibleRows, CAST(NULL AS BIGINT) AS RowsToExport, CAST(NULL AS BIGINT) AS ExpiredRows,
+                   CAST(NULL AS BIGINT) AS RetainedRows, CAST(NULL AS BIGINT) AS OrphanRows, CAST(NULL AS INT) AS ExportDateCount,
+                   CAST(NULL AS CHAR(10)) AS MinBusinessDate, CAST(NULL AS CHAR(10)) AS MaxBusinessDate, @Msg AS Message;
+            RETURN;
+        END;
 
         SELECT @ToExport = ISNULL(SUM(ExpectedRows), 0), @DateCount = COUNT(*),
                @MinDate = MIN(BusinessDate), @MaxDate = MAX(BusinessDate)
@@ -2614,7 +2714,7 @@ BEGIN
             BEGIN
                 UPDATE ret.RetentionTableStatus
                    SET HasOrphanFiles = 1, OrphanFilesRunId = @LogRunId, ModifiedBy = ORIGINAL_LOGIN(), ModifiedAt = ret.fn_NowUtc7(),
-                       FlagComment = CONCAT(N'Unfinished table rebuild of RunId ', @LogRunId, N': remove files *_', @LogRunId, N'.parquet of this table')
+                       FlagComment = CONCAT(N'Unfinished table rebuild of RunId ', @LogRunId, N': remove the files of that run listed in ret.RetentionArchiveDate')
                  WHERE TableConfigId = @TableConfigId;
                 SET @Msg = CONCAT(N'Unfinished rebuild of RunId ', @LogRunId, N' undone: new table dropped, validation revoked, original table unchanged. ',
                                   N'Archive files of RunId ', @LogRunId, N' flagged as orphan files.');
@@ -3442,29 +3542,29 @@ BEGIN
 END;
 GO
 
-/* 8.2 ret.usp_GetExpiredArchiveFolders - DR-05 / BRQ-11 / BR-14, layout MD-07.
-       Called per folder level with the ADF Get Metadata childItems of that folder:
-         @Level = 'YEAR'  : folder <BlobPath>                     items year=YYYY
-         @Level = 'MONTH' : folder <BlobPath>/year=@Year          items month=MM
-         @Level = 'DAY'   : folder <BlobPath>/year=@Year/month=@Month  items day=DD
-       Action DELETE  = whole folder older than the archive cut-off (recursive Delete activity);
-       Action DESCEND = folder that contains the cut-off; list it and call again one level lower
-                        with NextYear / NextMonth. Items not matching the pattern are never deleted
-                        and are logged as a warning (DBR-12). */
+/* 8.2 ret.usp_GetExpiredArchiveFolders - expired archive deletion (FSD 4.13, 5.4, DR-05), layout MD-07
+       <container>/<yyyy>/<BlobPath>/<BlobPath>_<yyyyMMdd>.parquet. Called with the ADF Get Metadata childItems:
+         @Level = 'YEAR' : container root, items <yyyy> (folders). Every year before the archive cut-off year
+                           returns folder <yyyy>/<BlobPath> with Action DELETE (recursive delete; ADF first
+                           checks that the folder exists - the year folder is shared by all tables).
+         @Level = 'FILE' : folder <@Year>/<BlobPath> (@Year = archive cut-off year), items
+                           <BlobPath>_<yyyyMMdd>.parquet (files). Every file dated before the archive cut-off
+                           returns Action DELETE with FolderPath and FileName.
+       Items not matching the pattern are never deleted and are logged as a warning.
+       Result: ItemName, FolderPath, FileName ('' for a folder), Action. */
 CREATE OR ALTER PROCEDURE ret.usp_GetExpiredArchiveFolders
     @TableLogId     BIGINT,
     @ChildItemsJson NVARCHAR(MAX),
     @Level          VARCHAR(5)  = 'YEAR',
-    @Year           SMALLINT    = NULL,
-    @Month          TINYINT     = NULL
+    @Year           SMALLINT    = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
 
     DECLARE @Now DATETIME2(3) = ret.fn_NowUtc7();
     DECLARE @RunId BIGINT, @TableConfigId INT, @ProcessType VARCHAR(20), @ArchiveCutoff DATE, @BlobPath NVARCHAR(400),
-            @ParentPath NVARCHAR(1024), @CutYear INT, @CutMonth INT, @Ignored NVARCHAR(MAX), @ToDelete INT, @ToDescend INT,
-            @Msg NVARCHAR(4000), @StepStatus VARCHAR(10);
+            @ParentPath NVARCHAR(1024), @CutYear INT, @Ignored NVARCHAR(MAX), @ToDelete INT, @Msg NVARCHAR(4000),
+            @StepStatus VARCHAR(10), @Prefix NVARCHAR(410);
 
     SELECT @RunId = l.RunId, @TableConfigId = l.TableConfigId, @ProcessType = l.ProcessType,
            @ArchiveCutoff = l.ArchiveCutoffDate, @BlobPath = c.BlobPath
@@ -3480,80 +3580,76 @@ BEGIN
     BEGIN
         ;THROW 50232, N'Expired archive deletion runs only in the Daily Routine (DR-05).', 1;
     END;
-    IF @Level IS NULL OR @Level NOT IN ('YEAR', 'MONTH', 'DAY')
-       OR (@Level IN ('MONTH', 'DAY') AND @Year IS NULL) OR (@Level = 'DAY' AND (@Month IS NULL OR @Month NOT BETWEEN 1 AND 12))
+    IF @Level IS NULL OR @Level NOT IN ('YEAR', 'FILE') OR (@Level = 'FILE' AND @Year IS NULL)
     BEGIN
-        ;THROW 50233, N'Invalid @Level / @Year / @Month combination (YEAR; MONTH with @Year; DAY with @Year and @Month).', 1;
+        ;THROW 50233, N'Invalid @Level / @Year combination (YEAR; FILE with @Year).', 1;
     END;
 
-    SELECT @CutYear = YEAR(@ArchiveCutoff), @CutMonth = MONTH(@ArchiveCutoff);
-    SET @ParentPath = @BlobPath
-                    + CASE WHEN @Level IN ('MONTH', 'DAY') THEN CONCAT(N'/year=', RIGHT(CONCAT(N'000', @Year), 4)) ELSE N'' END
-                    + CASE WHEN @Level = 'DAY' THEN CONCAT(N'/month=', RIGHT(CONCAT(N'0', @Month), 2)) ELSE N'' END;
+    SET @CutYear    = YEAR(@ArchiveCutoff);
+    SET @Prefix     = @BlobPath + N'_';
+    SET @ParentPath = CASE WHEN @Level = 'YEAR' THEN N'' ELSE CONCAT(RIGHT(CONCAT(N'000', @Year), 4), N'/', @BlobPath) END;
 
-    CREATE TABLE #Item (ItemName NVARCHAR(400) NULL, ItemType NVARCHAR(20) NULL, Val INT NULL, ItemDate DATE NULL, Action VARCHAR(10) NULL);
+    CREATE TABLE #Item (ItemName NVARCHAR(400) NULL, ItemType NVARCHAR(20) NULL, ItemYear INT NULL, ItemDate DATE NULL,
+                        IsValid BIT NOT NULL DEFAULT (0), Action VARCHAR(10) NULL);
 
     IF NULLIF(LTRIM(RTRIM(@ChildItemsJson)), N'') IS NOT NULL
     BEGIN
         IF ISJSON(@ChildItemsJson) = 0
         BEGIN
-            SET @Msg = N'Get Metadata output is not valid JSON; no folder deleted.';
+            SET @Msg = N'Get Metadata output is not valid JSON; nothing deleted.';
             EXEC ret.usp_SetTableError @TableLogId = @TableLogId, @ErrorCode = 'ERR-ARC-01', @ErrorStep = 'EXPIRE', @ErrorMessage = @Msg;
             EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'EXPIRE', @Status = 'FAILED', @TableLogId = @TableLogId,
                  @TableConfigId = @TableConfigId, @StartTime = @Now, @ErrorCode = 'ERR-ARC-01', @ErrorMessage = @Msg;
-            SELECT CAST(NULL AS NVARCHAR(400)) AS FolderName, CAST(NULL AS NVARCHAR(1024)) AS FolderPath, CAST(NULL AS VARCHAR(10)) AS Action,
-                   CAST(NULL AS SMALLINT) AS NextYear, CAST(NULL AS TINYINT) AS NextMonth
+            SELECT CAST(NULL AS NVARCHAR(400)) AS ItemName, CAST(NULL AS NVARCHAR(1024)) AS FolderPath,
+                   CAST(NULL AS NVARCHAR(400)) AS FileName, CAST(NULL AS VARCHAR(10)) AS Action
             WHERE 1 = 0;
             RETURN;
         END;
 
-        INSERT INTO #Item (ItemName, ItemType, Val)
-        SELECT j.ItemName, j.ItemType,
-               CASE WHEN j.ItemType <> N'Folder' THEN NULL
-                    WHEN @Level = 'YEAR'  AND LEN(j.ItemName) = 9 AND j.ItemName LIKE N'year=[12][0-9][0-9][0-9]'
-                        THEN TRY_CONVERT(INT, SUBSTRING(j.ItemName, 6, 4))
-                    WHEN @Level = 'MONTH' AND LEN(j.ItemName) = 8 AND j.ItemName LIKE N'month=[01][0-9]'
-                         AND TRY_CONVERT(INT, SUBSTRING(j.ItemName, 7, 2)) BETWEEN 1 AND 12
-                        THEN TRY_CONVERT(INT, SUBSTRING(j.ItemName, 7, 2))
-                    WHEN @Level = 'DAY'   AND LEN(j.ItemName) = 6 AND j.ItemName LIKE N'day=[0-3][0-9]'
-                         AND TRY_CONVERT(DATE, CONCAT(RIGHT(CONCAT(N'000', @Year), 4), N'-', RIGHT(CONCAT(N'0', @Month), 2), N'-',
-                                                      SUBSTRING(j.ItemName, 5, 2)), 23) IS NOT NULL
-                        THEN TRY_CONVERT(INT, SUBSTRING(j.ItemName, 5, 2))
-               END
+        INSERT INTO #Item (ItemName, ItemType)
+        SELECT j.ItemName, j.ItemType
         FROM OPENJSON(@ChildItemsJson) WITH (ItemName NVARCHAR(400) '$.name', ItemType NVARCHAR(20) '$.type') AS j;
 
+        IF @Level = 'YEAR'
+            UPDATE #Item
+               SET ItemYear = TRY_CONVERT(INT, ItemName),
+                   IsValid  = CASE WHEN ItemType = N'Folder' AND LEN(ItemName) = 4 AND ItemName LIKE N'[12][0-9][0-9][0-9]' THEN 1 ELSE 0 END;
+        ELSE
+            UPDATE #Item
+               SET ItemDate = CASE WHEN ItemType = N'File' AND LEN(ItemName) = LEN(@Prefix) + 16
+                                    AND LEFT(ItemName, LEN(@Prefix)) COLLATE Latin1_General_100_BIN2 = @Prefix COLLATE Latin1_General_100_BIN2
+                                    AND RIGHT(ItemName, 8) COLLATE Latin1_General_100_BIN2 = N'.parquet'
+                                    AND SUBSTRING(ItemName, LEN(@Prefix) + 1, 8) NOT LIKE N'%[^0-9]%'
+                                   THEN TRY_CONVERT(DATE, SUBSTRING(ItemName, LEN(@Prefix) + 1, 8), 112) END;
+
+        IF @Level = 'FILE'
+            UPDATE #Item SET IsValid = CASE WHEN ItemDate IS NOT NULL AND YEAR(ItemDate) = @Year THEN 1 ELSE 0 END;
+
         UPDATE #Item
-           SET Action = CASE
-                   WHEN Val IS NULL THEN NULL
-                   WHEN @Level = 'YEAR'  AND Val <  @CutYear THEN 'DELETE'
-                   WHEN @Level = 'YEAR'  AND Val =  @CutYear THEN 'DESCEND'
-                   WHEN @Level = 'MONTH' AND @Year < @CutYear THEN 'DELETE'
-                   WHEN @Level = 'MONTH' AND @Year = @CutYear AND Val <  @CutMonth THEN 'DELETE'
-                   WHEN @Level = 'MONTH' AND @Year = @CutYear AND Val =  @CutMonth THEN 'DESCEND'
-                   WHEN @Level = 'DAY'   AND DATEFROMPARTS(@Year, @Month, Val) < @ArchiveCutoff THEN 'DELETE'
-               END;
+           SET Action = CASE WHEN IsValid = 0 THEN NULL
+                             WHEN @Level = 'YEAR' AND ItemYear < @CutYear THEN 'DELETE'
+                             WHEN @Level = 'FILE' AND ItemDate < @ArchiveCutoff THEN 'DELETE' END;
     END;
 
-    SELECT @Ignored   = STRING_AGG(CONVERT(NVARCHAR(MAX), ItemName) COLLATE DATABASE_DEFAULT, N', ') FROM #Item WHERE Val IS NULL;
-    SELECT @ToDelete  = COUNT(*) FROM #Item WHERE Action = 'DELETE';
-    SELECT @ToDescend = COUNT(*) FROM #Item WHERE Action = 'DESCEND';
+    SELECT @Ignored  = STRING_AGG(CONVERT(NVARCHAR(MAX), LEFT(ItemName, 200)) COLLATE DATABASE_DEFAULT, N', ') FROM #Item WHERE IsValid = 0;
+    SELECT @ToDelete = COUNT(*) FROM #Item WHERE Action = 'DELETE';
 
-    SET @Msg = LEFT(CONCAT(N'Level ', @Level, N' of ', @ParentPath, N' (archive cut-off ', CONVERT(CHAR(10), @ArchiveCutoff, 23), N'): ',
-                           @ToDelete, N' folders to delete, ', @ToDescend, N' to descend',
-                           CASE WHEN @Ignored IS NOT NULL THEN CONCAT(N'. Items not matching the folder pattern, not deleted: ', @Ignored) ELSE N'' END,
+    SET @Msg = LEFT(CONCAT(N'Level ', @Level, N' of ', CASE WHEN @ParentPath = N'' THEN N'<container root>' ELSE @ParentPath END,
+                           N' (archive cut-off ', CONVERT(CHAR(10), @ArchiveCutoff, 23), N'): ', @ToDelete,
+                           CASE WHEN @Level = 'YEAR' THEN N' year folders of this table to delete' ELSE N' files to delete' END,
+                           CASE WHEN @Ignored IS NOT NULL THEN CONCAT(N'. Items not matching the pattern, not deleted: ', @Ignored) ELSE N'' END,
                            N'.'), 4000);
     SET @StepStatus = CASE WHEN @Ignored IS NULL THEN 'SUCCEEDED' ELSE 'WARNING' END;
     EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'EXPIRE', @Status = @StepStatus,
          @TableLogId = @TableLogId, @TableConfigId = @TableConfigId, @StartTime = @Now, @Message = @Msg;
 
-    SELECT i.ItemName AS FolderName,
-           @ParentPath + N'/' + i.ItemName AS FolderPath,
-           i.Action,
-           CAST(CASE WHEN @Level = 'YEAR' THEN i.Val ELSE @Year END AS SMALLINT) AS NextYear,
-           CAST(CASE WHEN @Level = 'MONTH' THEN i.Val END AS TINYINT) AS NextMonth
+    SELECT i.ItemName,
+           CASE WHEN @Level = 'YEAR' THEN i.ItemName + N'/' + @BlobPath ELSE @ParentPath END AS FolderPath,
+           CASE WHEN @Level = 'YEAR' THEN N'' ELSE i.ItemName END AS FileName,
+           i.Action
     FROM #Item AS i
-    WHERE i.Action IN ('DELETE', 'DESCEND')
-    ORDER BY i.Action DESC, i.Val;
+    WHERE i.Action = 'DELETE'
+    ORDER BY i.ItemName;
 END;
 GO
 
@@ -3674,6 +3770,34 @@ BEGIN
 END;
 GO
 
+/* 8.4a ret.usp_GetRunArchiveFiles - archive files that one table log (run) may have written (FSD 4.18, 6.1).
+        Used by PL_RET_03F after an export, validation, recount or rebuild failure: ADF deletes exactly these
+        files (no wildcard), then calls usp_LogCleanupResult. Dates still PENDING were never written;
+        dates already REMOVED were cleaned before. At most 5,000 rows (ADF Lookup limit); a table log has at
+        most one row per business date of about five years. */
+CREATE OR ALTER PROCEDURE ret.usp_GetRunArchiveFiles
+    @TableLogId BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM ret.RetentionTableLog WHERE TableLogId = @TableLogId)
+    BEGIN
+        ;THROW 50255, N'TableLogId not found.', 1;
+    END;
+
+    SELECT TOP (5000)
+           CONVERT(CHAR(10), a.BusinessDate, 23) AS BusinessDate,
+           a.FolderPath,
+           a.FileName,
+           a.ExportStatus
+    FROM ret.RetentionArchiveDate AS a
+    WHERE a.TableLogId = @TableLogId
+      AND a.ExportStatus IN ('SUCCEEDED', 'FAILED', 'STOPPED')
+    ORDER BY a.BusinessDate;
+END;
+GO
+
 /* 8.5 ret.usp_AbortRunRebuilds - internal: undo unfinished rebuilds of one run when the run is
        closed without the ADF failure path (usp_EndRun, usp_AdminCloseStaleRun). */
 CREATE OR ALTER PROCEDURE ret.usp_AbortRunRebuilds
@@ -3701,9 +3825,144 @@ BEGIN
 END;
 GO
 
+/* 8.5a ret.usp_PurgeTableLogs - internal: log retention of one table (MD-08, FSD 4.24), called by usp_EndTable
+        in the Daily Routine. Deletes step, archive-date and table log rows of the table whose run date is before
+        RunDate - LogRetentionYears. Kept: the current table log, open table logs, validated ranges not fully
+        deleted, runs referenced by ret.RetentionTableStatus and [v0.6] table logs whose archive inventory still
+        lists files that are not expired (business date >= archive cut-off), because decision D-1 needs them. */
+CREATE OR ALTER PROCEDURE ret.usp_PurgeTableLogs
+    @TableLogId     BIGINT,
+    @RowsDeleted    INT = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @TableConfigId INT, @ProcessType VARCHAR(20), @RunDate DATE, @ArchiveCutoff DATE, @LogYears SMALLINT,
+            @LogCutoff DATE, @n INT = 0;
+
+    SET @RowsDeleted = 0;
+
+    SELECT @TableConfigId = l.TableConfigId, @ProcessType = l.ProcessType, @RunDate = l.RunDate,
+           @ArchiveCutoff = l.ArchiveCutoffDate, @LogYears = c.LogRetentionYears
+    FROM ret.RetentionTableLog AS l
+    JOIN ret.RetentionConfig AS c ON c.TableConfigId = l.TableConfigId
+    WHERE l.TableLogId = @TableLogId;
+
+    IF @TableConfigId IS NULL OR @ProcessType <> 'DAILY_ROUTINE' OR @LogYears IS NULL OR @LogYears < 1
+        RETURN;
+
+    SET @LogCutoff = DATEADD(YEAR, -@LogYears, @RunDate);
+
+    CREATE TABLE #Del (TableLogId BIGINT NOT NULL PRIMARY KEY);
+
+    INSERT INTO #Del (TableLogId)
+    SELECT l.TableLogId
+    FROM ret.RetentionTableLog AS l
+    WHERE l.TableConfigId = @TableConfigId
+      AND l.TableLogId <> @TableLogId
+      AND l.RunDate < @LogCutoff
+      AND l.EndTime IS NOT NULL
+      AND NOT (l.IsValidated = 1 AND l.DeleteStatus IN ('NOT_STARTED', 'IN_PROGRESS', 'FAILED'))
+      AND NOT EXISTS (SELECT 1 FROM ret.RetentionTableStatus AS s
+                      WHERE s.TableConfigId = l.TableConfigId
+                        AND l.RunId IN (ISNULL(s.LastInitialCutoffRunId, -1), ISNULL(s.OrphanFilesRunId, -1),
+                                        ISNULL(s.IntegrityIssueRunId, -1), ISNULL(s.ReconciliationWarningRunId, -1)))
+      AND NOT EXISTS (SELECT 1 FROM ret.RetentionArchiveDate AS a
+                      WHERE a.TableLogId = l.TableLogId AND a.ExportStatus = 'SUCCEEDED'
+                        AND (@ArchiveCutoff IS NULL OR a.BusinessDate >= @ArchiveCutoff));
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+            DELETE sl FROM ret.RetentionStepLog AS sl JOIN #Del AS d ON d.TableLogId = sl.TableLogId;
+            SET @n += @@ROWCOUNT;
+
+            DELETE sl FROM ret.RetentionStepLog AS sl
+            WHERE sl.TableConfigId = @TableConfigId AND sl.TableLogId IS NULL AND sl.StartTime < @LogCutoff;
+            SET @n += @@ROWCOUNT;
+
+            DELETE a FROM ret.RetentionArchiveDate AS a JOIN #Del AS d ON d.TableLogId = a.TableLogId;
+            SET @n += @@ROWCOUNT;
+
+            DELETE l FROM ret.RetentionTableLog AS l JOIN #Del AS d ON d.TableLogId = l.TableLogId;
+            SET @n += @@ROWCOUNT;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
+
+    SET @RowsDeleted = @n;
+END;
+GO
+
+/* 8.5b ret.usp_PurgeRunLogs - internal: run-level log retention (FSD 4.24), called by usp_EndRun of a Daily
+        Routine. Deletes run log rows (and their run-level step rows) older than RunDate - the largest
+        LogRetentionYears of the configuration, when no table log, archive inventory, status flag, lock or
+        later step still refers to the run. */
+CREATE OR ALTER PROCEDURE ret.usp_PurgeRunLogs
+    @RunId          BIGINT,
+    @RowsDeleted    INT = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @ProcessType VARCHAR(20), @RunDate DATE, @MaxYears SMALLINT, @RunCutoff DATE, @n INT = 0;
+
+    SET @RowsDeleted = 0;
+
+    SELECT @ProcessType = ProcessType, @RunDate = RunDate FROM ret.RetentionRunLog WHERE RunId = @RunId;
+    IF @ProcessType IS NULL OR @ProcessType <> 'DAILY_ROUTINE'
+        RETURN;
+
+    SELECT @MaxYears = ISNULL(MAX(LogRetentionYears), 3) FROM ret.RetentionConfig;
+    SET @RunCutoff = DATEADD(YEAR, -@MaxYears, @RunDate);
+
+    CREATE TABLE #DelRun (RunId BIGINT NOT NULL PRIMARY KEY);
+
+    INSERT INTO #DelRun (RunId)
+    SELECT r.RunId
+    FROM ret.RetentionRunLog AS r
+    WHERE r.RunId <> @RunId
+      AND r.RunDate < @RunCutoff
+      AND r.Status <> 'RUNNING'
+      AND NOT EXISTS (SELECT 1 FROM ret.RetentionTableLog AS l WHERE l.RunId = r.RunId OR l.ResumedByRunId = r.RunId)
+      AND NOT EXISTS (SELECT 1 FROM ret.RetentionArchiveDate AS a WHERE a.RunId = r.RunId)
+      AND NOT EXISTS (SELECT 1 FROM ret.RetentionTableLock AS k WHERE k.RunId = r.RunId)
+      AND NOT EXISTS (SELECT 1 FROM ret.RetentionTableStatus AS s
+                      WHERE r.RunId IN (ISNULL(s.LastInitialCutoffRunId, -1), ISNULL(s.OrphanFilesRunId, -1),
+                                        ISNULL(s.IntegrityIssueRunId, -1), ISNULL(s.ReconciliationWarningRunId, -1)))
+      AND NOT EXISTS (SELECT 1 FROM ret.RetentionStepLog AS sl WHERE sl.ReferenceRunId = r.RunId AND sl.RunId <> r.RunId);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+            DELETE sl FROM ret.RetentionStepLog AS sl JOIN #DelRun AS d ON d.RunId = sl.RunId;
+            SET @n += @@ROWCOUNT;
+
+            DELETE r FROM ret.RetentionRunLog AS r JOIN #DelRun AS d ON d.RunId = r.RunId;
+            SET @n += @@ROWCOUNT;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
+
+    SET @RowsDeleted = @n;
+END;
+GO
+
 /* 8.6 ret.usp_EndTable - close the table log, final status, Initial Cut-off status on failure/stop,
        release the lock. Always called, also from ADF failure paths. Idempotent. An unfinished rebuild
-       still open here is undone and its files are flagged as orphan files. */
+       still open here is undone and its files are flagged as orphan files.
+       v0.6 (MD-08, FSD 4.24): in the Daily Routine log records of the table older than LogRetentionYears are
+       deleted (usp_PurgeTableLogs); a failure is logged as a warning and does not change the table result. */
 CREATE OR ALTER PROCEDURE ret.usp_EndTable
     @TableLogId     BIGINT,
     @ErrorCode      VARCHAR(12)     = NULL,
@@ -3717,7 +3976,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = ret.fn_NowUtc7();
     DECLARE @RunId BIGINT, @TableConfigId INT, @ProcessType VARCHAR(20), @Status VARCHAR(10), @EndTime DATETIME2(3),
             @Eligible BIGINT, @DeleteStatus VARCHAR(15), @IcStatus VARCHAR(10), @IcRunId BIGINT, @Final VARCHAR(10), @Msg NVARCHAR(4000),
-            @StepStatus VARCHAR(10);
+            @StepStatus VARCHAR(10), @Purged INT, @PurgeMsg NVARCHAR(4000), @PurgeErr NVARCHAR(4000);
 
     SELECT @RunId = l.RunId, @TableConfigId = l.TableConfigId, @ProcessType = l.ProcessType, @EndTime = l.EndTime
     FROM ret.RetentionTableLog AS l WHERE l.TableLogId = @TableLogId;
@@ -3781,11 +4040,32 @@ BEGIN
                    ModifiedBy = ORIGINAL_LOGIN(), ModifiedAt = ret.fn_NowUtc7()
              WHERE TableConfigId = @TableConfigId;
 
+        /* ---- Log retention (MD-08, FSD 4.24): Daily Routine only; never changes the table result ---- */
+        IF @ProcessType = 'DAILY_ROUTINE'
+        BEGIN
+            BEGIN TRY
+                EXEC ret.usp_PurgeTableLogs @TableLogId = @TableLogId, @RowsDeleted = @Purged OUTPUT;
+                SET @PurgeMsg = CONCAT(N' Log records older than LogRetentionYears deleted: ', ISNULL(@Purged, 0), N'.');
+            END TRY
+            BEGIN CATCH
+                IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+                SET @PurgeErr = LEFT(ERROR_MESSAGE(), 4000);
+            END CATCH;
+        END;
+
         SELECT @StepStatus = CASE WHEN @Final IN ('SUCCEEDED', 'NODATA') THEN 'SUCCEEDED' WHEN @Final = 'STOPPED' THEN 'STOPPED'
                                   WHEN @Final = 'SKIPPED' THEN 'SKIPPED' ELSE 'FAILED' END,
-               @Msg = CONCAT(N'Final status: ', @Final, N'.');
+               @Msg = CONCAT(N'Final status: ', @Final, N'.', @PurgeMsg);
         EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'END_TABLE', @Status = @StepStatus,
-             @TableLogId = @TableLogId, @TableConfigId = @TableConfigId, @StartTime = @Now, @Message = @Msg;
+             @TableLogId = @TableLogId, @TableConfigId = @TableConfigId, @StartTime = @Now, @Message = @Msg,
+             @RowsProcessed = @Purged;
+
+        IF @PurgeErr IS NOT NULL
+        BEGIN
+            SET @PurgeMsg = CONCAT(N'Log retention failed; retried by the next Daily Routine (FSD 4.24): ', @PurgeErr);
+            EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'END_TABLE', @Status = 'WARNING',
+                 @TableLogId = @TableLogId, @TableConfigId = @TableConfigId, @StartTime = @Now, @Message = @PurgeMsg;
+        END;
     END;
 
     DELETE FROM ret.RetentionTableLock WHERE TableConfigId = @TableConfigId AND RunId = @RunId;
@@ -3811,7 +4091,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = ret.fn_NowUtc7();
     DECLARE @RunStatus VARCHAR(25), @Succeeded INT, @Failed INT, @Skipped INT, @Final VARCHAR(25), @Msg NVARCHAR(2048),
-            @StepStatus VARCHAR(10), @StepMsg NVARCHAR(4000);
+            @StepStatus VARCHAR(10), @StepMsg NVARCHAR(4000), @Purged INT, @PurgeErr NVARCHAR(4000);
 
     SELECT @RunStatus = Status FROM ret.RetentionRunLog WHERE RunId = @RunId;
     IF @RunStatus IS NULL
@@ -3863,6 +4143,23 @@ BEGIN
                @StepMsg = CONCAT(N'Run ', @Final, N'. Succeeded/NoData: ', @Succeeded, N'; failed/stopped: ', @Failed, N'; skipped: ', @Skipped, N'.');
         EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'END_RUN', @Status = @StepStatus,
              @StartTime = @Now, @Message = @StepMsg, @ErrorMessage = @ErrorMessage;
+
+        /* ---- Run-level log retention (FSD 4.24), Daily Routine only; never changes the run result ---- */
+        BEGIN TRY
+            EXEC ret.usp_PurgeRunLogs @RunId = @RunId, @RowsDeleted = @Purged OUTPUT;
+            IF @Purged > 0
+            BEGIN
+                SET @StepMsg = CONCAT(N'Run-level log records older than LogRetentionYears deleted: ', @Purged, N'.');
+                EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'END_RUN', @Status = 'SUCCEEDED',
+                     @StartTime = @Now, @Message = @StepMsg, @RowsProcessed = @Purged;
+            END;
+        END TRY
+        BEGIN CATCH
+            IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+            SET @PurgeErr = LEFT(CONCAT(N'Run-level log retention failed; retried by the next Daily Routine: ', ERROR_MESSAGE()), 4000);
+            EXEC ret.usp_WriteStepLog @RunId = @RunId, @StepCode = 'END_RUN', @Status = 'WARNING',
+                 @StartTime = @Now, @Message = @PurgeErr;
+        END CATCH;
     END;
 
     SELECT RunId, ProcessType, CONVERT(CHAR(10), RunDate, 23) AS RunDate, Status, TablesSelected, TablesSucceeded,
@@ -4128,6 +4425,82 @@ END;
 GO
 
 /* =====================================================================================
+   9b. MONITORING VIEWS (FSD 4.15, 11.3, MQ-01..MQ-06) - read-only, role ret_log_reader
+       Ordering is given in the query, not in the view, e.g.
+         SELECT TOP (20) * FROM ret.vw_MQ01_LatestRuns ORDER BY RunId DESC;
+         SELECT * FROM ret.vw_MQ02_FailedTables ORDER BY TableLogId DESC;
+         SELECT * FROM ret.vw_MQ05_Reconciliation WHERE RunDate = CAST(DATEADD(DAY, -1, ret.fn_TodayUtc7()) AS DATE);
+   ===================================================================================== */
+
+-- MQ-01 Runs with status and counters
+CREATE OR ALTER VIEW ret.vw_MQ01_LatestRuns
+AS
+SELECT RunId, ProcessType, RunDate, TriggerType, Status, TablesSelected, TablesSucceeded,
+       TablesFailed, TablesSkipped, StartTime, EndTime, ErrorMessage
+FROM ret.RetentionRunLog;
+GO
+
+-- MQ-02 Failed, stopped or skipped tables of the last 7 days
+CREATE OR ALTER VIEW ret.vw_MQ02_FailedTables
+AS
+SELECT l.TableLogId, l.RunId, l.RunDate, l.ProcessType, c.SchemaName, c.TableName,
+       l.Status, l.ErrorCode, l.ErrorStep, l.ErrorMessage
+FROM ret.RetentionTableLog AS l
+JOIN ret.RetentionConfig AS c ON c.TableConfigId = l.TableConfigId
+WHERE l.Status IN ('FAILED', 'STOPPED', 'SKIPPED')
+  AND l.RunDate >= DATEADD(DAY, -7, ret.fn_TodayUtc7());
+GO
+
+-- MQ-03 Status and flags per table, with the header of child tables
+CREATE OR ALTER VIEW ret.vw_MQ03_TableStatus
+AS
+SELECT c.TableConfigId, c.SchemaName, c.TableName, c.RetentionColumn,
+       h.SchemaName + N'.' + h.TableName AS HeaderTable, c.IsActive, c.SizeCategory,
+       c.InitialCutoffMethod, c.LogRetentionYears, s.InitialCutoffStatus, s.InitialCutoffCompletionDate,
+       s.HasOrphanFiles, s.HasIntegrityIssue, s.HasReconciliationWarning, s.FlagComment
+FROM ret.RetentionConfig AS c
+JOIN ret.RetentionTableStatus AS s ON s.TableConfigId = c.TableConfigId
+LEFT JOIN ret.RetentionConfig AS h ON h.TableConfigId = c.ParentTableConfigId;
+GO
+
+-- MQ-04 Validated ranges not fully deleted (pending resume)
+CREATE OR ALTER VIEW ret.vw_MQ04_PendingResume
+AS
+SELECT l.TableLogId, l.RunId, c.SchemaName, c.TableName, l.ValidatedRangeTo,
+       l.ValidatedRowCount, l.RowsDeleted, l.DeleteStatus
+FROM ret.RetentionTableLog AS l
+JOIN ret.RetentionConfig AS c ON c.TableConfigId = l.TableConfigId
+WHERE l.IsValidated = 1 AND l.DeleteStatus IN ('NOT_STARTED', 'IN_PROGRESS', 'FAILED');
+GO
+
+-- MQ-05 Reconciliation per table run
+CREATE OR ALTER VIEW ret.vw_MQ05_Reconciliation
+AS
+SELECT l.TableLogId, l.RunId, l.RunDate, c.SchemaName, c.TableName, l.MethodUsed, l.EligibleRows,
+       l.ArchivedSegmentRows, l.ExpiredSegmentRows, l.RowsExported, l.RowsDeleted,
+       l.RetainedRowsBefore, l.RetainedRowsAfter, l.OrphanRows,
+       l.ArchiveFoldersDeleted, l.ArchiveFilesDeleted, l.Status
+FROM ret.RetentionTableLog AS l
+JOIN ret.RetentionConfig AS c ON c.TableConfigId = l.TableConfigId
+WHERE l.ProcessType IN ('INITIAL_CUTOFF', 'DAILY_ROUTINE');
+GO
+
+-- MQ-06 Locks held and leftover __RBD_ tables. Catalog names are converted to the database collation
+-- (UNION with configuration columns); create_date is UTC and is shown in UTC+7.
+CREATE OR ALTER VIEW ret.vw_MQ06_LocksAndRebuildTables
+AS
+SELECT N'LOCK' AS ItemType, c.SchemaName, c.TableName, k.RunId, k.ProcessType,
+       k.AcquiredAt AS SinceUtc7, k.AcquiredBy
+FROM ret.RetentionTableLock AS k
+JOIN ret.RetentionConfig AS c ON c.TableConfigId = k.TableConfigId
+UNION ALL
+SELECT N'REBUILD_TABLE', CONVERT(SYSNAME, SCHEMA_NAME(t.schema_id)) COLLATE DATABASE_DEFAULT, t.name COLLATE DATABASE_DEFAULT,
+       NULL, NULL, CONVERT(DATETIME2(3), DATEADD(HOUR, 7, t.create_date)), NULL
+FROM sys.tables AS t
+WHERE t.name COLLATE DATABASE_DEFAULT LIKE N'%[_][_]RBD[_]%';
+GO
+
+/* =====================================================================================
    10. EXAMPLE CONFIGURATION (COMMENTED OUT)
        Values are illustrations only. Schema, table, column, method and size category come from
        the approved candidate list (FSD Appendix A, D-05); the container name from D-02.
@@ -4141,7 +4514,7 @@ INSERT INTO ret.RetentionConfig
      BlobPath, InitialCutoffMethod, IsActive, SizeCategory)
 VALUES
     (N'BOS', N'JTI_SD_BrandDistDetail', N'dtmDate', NULL, 3, 5,
-     N'bos/jti_sd_branddistdetail', 'BATCH_DELETE', 1, 'SMALL');            -- method and size TBD
+     N'bos.jti_sd_branddistdetail', 'BATCH_DELETE', 1, 'LARGE');            -- method TBD (rebuild candidate)
 
 -- Header table and child table without its own date column (FR-023, MD-05)
 DECLARE @HeaderId INT, @ChildId INT;
@@ -4150,14 +4523,14 @@ INSERT INTO ret.RetentionConfig
     (SchemaName, TableName, RetentionColumn, ParentTableConfigId, DwhRetentionYears, BlobRetentionYears,
      BlobPath, InitialCutoffMethod, IsActive, SizeCategory)
 VALUES
-    (N'<schema>', N'<HeaderTable>', N'<dateColumn>', NULL, 3, 5, N'<schema>/<headertable>', 'BATCH_DELETE', 1, 'MEDIUM');
+    (N'<schema>', N'<HeaderTable>', N'<dateColumn>', NULL, 3, 5, N'<schema>.<headertable>', 'BATCH_DELETE', 1, 'MEDIUM');
 SET @HeaderId = SCOPE_IDENTITY();
 
 INSERT INTO ret.RetentionConfig
     (SchemaName, TableName, RetentionColumn, ParentTableConfigId, DwhRetentionYears, BlobRetentionYears,
      BlobPath, InitialCutoffMethod, IsActive, SizeCategory)
 VALUES
-    (N'<schema>', N'<ChildTable>', NULL, @HeaderId, 3, 5, N'<schema>/<childtable>', 'BATCH_DELETE', 1, 'MEDIUM');
+    (N'<schema>', N'<ChildTable>', NULL, @HeaderId, 3, 5, N'<schema>.<childtable>', 'BATCH_DELETE', 1, 'MEDIUM');
 SET @ChildId = SCOPE_IDENTITY();
 
 INSERT INTO ret.RetentionParentKey (TableConfigId, KeyOrdinal, ChildColumn, ParentColumn)
@@ -4173,7 +4546,7 @@ VALUES (@ChildId, 1, N'<childKeyColumn1>', N'<headerKeyColumn1>'),
    =====================================================================================
 -- Dry validation (V-01..V-11, no data change)
 EXEC ret.usp_StartRun @ProcessType = 'VALIDATION', @TriggerType = 'MANUAL', @TriggeredBy = N'<operator>';
-EXEC ret.usp_GetTablesToProcess @RunId = <RunId>, @TableConfigIdList = N'1,2';
+EXEC ret.usp_GetTablesToProcess @RunId = <RunId>, @TableConfigIdList = N'1,2';   -- or NULL: all active tables not COMPLETED (v0.6)
 EXEC ret.usp_BeginTable @RunId = <RunId>, @TableConfigId = 1;
 EXEC ret.usp_EndTable @TableLogId = <TableLogId>;
 EXEC ret.usp_EndRun @RunId = <RunId>, @FailPipelineOnError = 0;
@@ -4185,9 +4558,10 @@ EXEC ret.usp_StartRun @ProcessType = 'INITIAL_CUTOFF', @TriggerType = 'MANUAL', 
 --   on failure before the swap commits: usp_TableRebuildAbort -> file cleanup -> usp_LogCleanupResult -> usp_EndTable
 
 -- Archive expiry (DR-05), level by level
-EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'YEAR',  @ChildItemsJson = N'[{"name":"year=2017","type":"Folder"},{"name":"year=2018","type":"Folder"}]';
-EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'MONTH', @Year = 2018, @ChildItemsJson = N'[{"name":"month=09","type":"Folder"},{"name":"month=10","type":"Folder"}]';
-EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'DAY',   @Year = 2018, @Month = 10, @ChildItemsJson = N'[{"name":"day=26","type":"Folder"},{"name":"day=27","type":"Folder"}]';
+EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'YEAR', @ChildItemsJson = N'[{"name":"2017","type":"Folder"},{"name":"2018","type":"Folder"}]';
+EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'FILE', @Year = 2018, @ChildItemsJson = N'[{"name":"bos.jti_sd_branddistdetail_20181026.parquet","type":"File"},{"name":"bos.jti_sd_branddistdetail_20181027.parquet","type":"File"}]';
+-- Files written by one table log (cleanup after a failure)
+EXEC ret.usp_GetRunArchiveFiles @TableLogId = <TableLogId>;
 
 -- Activation of the Daily Routine after all Initial Cut-off Runs completed (AC-15)
 EXEC ret.usp_ActivateDailyRoutine @Confirm = 1;
@@ -4243,7 +4617,11 @@ FROM sys.tables AS t WHERE t.name LIKE N'%[_][_]RBD[_]%';
        The owner (dbo) needs the rights used by the rebuild: CREATE TABLE, ALTER, DROP, sp_rename,
        DBCC CHECKIDENT, GRANT on the rebuilt table (dbo has them).
        Internal procedures (usp_WriteStepLog, usp_SetTableError, usp_GetTableSqlParts,
-       usp_AbortRunRebuilds) are not granted to anyone.
+       usp_AbortRunRebuilds, usp_PurgeTableLogs, usp_PurgeRunLogs) are not granted to anyone.
+       Database user of the ADF connection: FSD SEC-01 uses the factory managed identity (FROM EXTERNAL
+       PROVIDER). If the linked service (e.g. Agus_SqlServer_dwh, type SQL Server) signs in with an SQL
+       login instead, create that user with FOR LOGIN (or as a contained user) and add it to
+       ret_adf_executor - deviation from SEC-01 to be recorded (review decision D-2).
    =====================================================================================
 CREATE USER [<adf-managed-identity-name>] FROM EXTERNAL PROVIDER;
 
@@ -4266,6 +4644,7 @@ GRANT EXECUTE ON ret.usp_PostCheck                  TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_GetExpiredArchiveFolders   TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_LogExpiredArchiveResult    TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_LogCleanupResult           TO ret_adf_executor;
+GRANT EXECUTE ON ret.usp_GetRunArchiveFiles         TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_EndTable                   TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_EndRun                     TO ret_adf_executor;
 ALTER ROLE ret_adf_executor ADD MEMBER [<adf-managed-identity-name>];

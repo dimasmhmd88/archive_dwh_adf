@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - schema ret - 01_schema_tables.sql
-   Part of DWH_Retention_DB_Objects_v0.5.sql (DRAFT - not reviewed, not executed against any database).
-   Schema, tables, indexes, migration from v0.2/v0.3 (sections 0-1)
+   Part of DWH_Retention_DB_Objects_v0.6.sql (DRAFT - not reviewed, not executed against any database).
+   Schema, tables, indexes, migration from v0.2/v0.3/v0.5 (sections 0-1)
    Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
    ===================================================================================== */
 
@@ -82,6 +82,7 @@ BEGIN
         ParentTableConfigId     INT             NULL,
         DwhRetentionYears       SMALLINT        NOT NULL CONSTRAINT DF_RetentionConfig_DwhYears   DEFAULT (3),
         BlobRetentionYears      SMALLINT        NOT NULL CONSTRAINT DF_RetentionConfig_BlobYears  DEFAULT (5),
+        LogRetentionYears       SMALLINT        NOT NULL CONSTRAINT DF_RetentionConfig_LogYears   DEFAULT (3),   -- MD-08
         BlobPath                NVARCHAR(400)   NOT NULL,
         InitialCutoffMethod     VARCHAR(20)     NOT NULL,
         IsActive                BIT             NOT NULL CONSTRAINT DF_RetentionConfig_IsActive   DEFAULT (1),
@@ -96,15 +97,15 @@ BEGIN
         CONSTRAINT FK_RetentionConfig_Parent   FOREIGN KEY (ParentTableConfigId) REFERENCES ret.RetentionConfig (TableConfigId),
         CONSTRAINT CK_RetentionConfig_DwhYears   CHECK (DwhRetentionYears >= 1),
         CONSTRAINT CK_RetentionConfig_BlobYears  CHECK (BlobRetentionYears >= 1),
+        CONSTRAINT CK_RetentionConfig_LogYears   CHECK (LogRetentionYears >= 1),
         CONSTRAINT CK_RetentionConfig_Method     CHECK (InitialCutoffMethod IN ('BATCH_DELETE', 'TABLE_REBUILD')),
         CONSTRAINT CK_RetentionConfig_Size       CHECK (SizeCategory IN ('SMALL', 'MEDIUM', 'LARGE')),
         CONSTRAINT CK_RetentionConfig_DateSource CHECK ((RetentionColumn IS NOT NULL AND ParentTableConfigId IS NULL)
                                                      OR (RetentionColumn IS NULL AND ParentTableConfigId IS NOT NULL)),
         CONSTRAINT CK_RetentionConfig_NotSelf    CHECK (ParentTableConfigId IS NULL OR ParentTableConfigId <> TableConfigId),
         CONSTRAINT CK_RetentionConfig_Names      CHECK (LEN(SchemaName) > 0 AND LEN(TableName) > 0 AND (RetentionColumn IS NULL OR LEN(RetentionColumn) > 0)),
-        -- <schema>/<table> in lower case, no leading/trailing slash (MD-07)
-        CONSTRAINT CK_RetentionConfig_BlobPath   CHECK (LEN(BlobPath) > 0 AND BlobPath NOT LIKE N'/%' AND BlobPath NOT LIKE N'%/'
-                                                     AND BlobPath NOT LIKE N'%//%' AND BlobPath NOT LIKE N'%\%'
+        -- <schema>.<table> in lower case, no slash or backslash (MD-07, FSD 7.2)
+        CONSTRAINT CK_RetentionConfig_BlobPath   CHECK (LEN(BlobPath) > 0 AND BlobPath NOT LIKE N'%/%' AND BlobPath NOT LIKE N'%\%'
                                                      AND BlobPath COLLATE Latin1_General_100_BIN2 = LOWER(BlobPath) COLLATE Latin1_General_100_BIN2)
     );
 
@@ -318,8 +319,8 @@ BEGIN
         RowsRead            BIGINT          NULL,
         RowsWritten         BIGINT          NULL,
         FileCount           INT             NULL,
-        FolderPath          NVARCHAR(1024)  NOT NULL,       -- <BlobPath>/year=YYYY/month=MM/day=DD (MD-07)
-        FileName            NVARCHAR(400)   NOT NULL,       -- <schema>_<table>_<yyyyMMdd>_<RunId>.parquet
+        FolderPath          NVARCHAR(1024)  NOT NULL,       -- <yyyy>/<BlobPath> (MD-07, v0.6)
+        FileName            NVARCHAR(400)   NOT NULL,       -- <BlobPath>_<yyyyMMdd>.parquet (MD-07, v0.6)
         ExportStatus        VARCHAR(10)     NOT NULL CONSTRAINT DF_RetentionArchiveDate_ExportStatus DEFAULT ('PENDING'),
         ValidationResult    VARCHAR(10)     NULL,
         ExportStartTime     DATETIME2(3)    NULL,
@@ -445,24 +446,37 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'ret.Reten
     CREATE NONCLUSTERED INDEX IX_RetentionConfig_Parent ON ret.RetentionConfig (ParentTableConfigId) WHERE ParentTableConfigId IS NOT NULL;
 GO
 
--- (d) BlobPath lower case (MD-07). Existing upper-case paths must be corrected (and their archive
---     folders moved) before the constraint can be added: the block reports them and stops.
+-- (d) BlobPath = <schema>.<table> in lower case without slash (MD-07 as decided 10 Nov 2026, FSD 7.2).
+--     Paths of tables without any archive file and with Initial Cut-off status PENDING are converted
+--     automatically ('/' -> '.', lower case). Other non-conforming paths are reported and the block stops:
+--     they must be corrected manually together with their archive folders.
 IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID(N'ret.RetentionConfig')
-               AND name = N'CK_RetentionConfig_BlobPath' AND definition LIKE N'%LOWER%')
+               AND name = N'CK_RetentionConfig_BlobPath' AND definition LIKE N'%LOWER%' AND definition LIKE N'%[%]/[%]%')
 BEGIN
+    UPDATE c
+       SET BlobPath = LOWER(REPLACE(c.BlobPath, N'/', N'.'))
+      FROM ret.RetentionConfig AS c
+      LEFT JOIN ret.RetentionTableStatus AS s ON s.TableConfigId = c.TableConfigId
+     WHERE (CHARINDEX(N'/', c.BlobPath) > 0
+            OR c.BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(c.BlobPath) COLLATE Latin1_General_100_BIN2)
+       AND ISNULL(s.InitialCutoffStatus, 'PENDING') = 'PENDING'
+       AND NOT EXISTS (SELECT 1 FROM ret.RetentionArchiveDate AS a WHERE a.TableConfigId = c.TableConfigId)
+       AND NOT EXISTS (SELECT 1 FROM ret.RetentionTableLog AS l WHERE l.TableConfigId = c.TableConfigId AND l.IsValidated = 1);
+
     IF EXISTS (SELECT 1 FROM ret.RetentionConfig
-               WHERE BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(BlobPath) COLLATE Latin1_General_100_BIN2)
+               WHERE CHARINDEX(N'/', BlobPath) > 0 OR CHARINDEX(N'\', BlobPath) > 0
+                  OR BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(BlobPath) COLLATE Latin1_General_100_BIN2)
     BEGIN
         SELECT TableConfigId, SchemaName, TableName, BlobPath FROM ret.RetentionConfig
-        WHERE BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(BlobPath) COLLATE Latin1_General_100_BIN2;
-        RAISERROR (N'Migration stopped: BlobPath values with upper-case letters exist (MD-07). Correct them first.', 16, 1);
+        WHERE CHARINDEX(N'/', BlobPath) > 0 OR CHARINDEX(N'\', BlobPath) > 0
+           OR BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(BlobPath) COLLATE Latin1_General_100_BIN2;
+        RAISERROR (N'Migration stopped: BlobPath values with a slash or upper-case letters exist for tables with archive files (MD-07). Correct them and their archive folders first.', 16, 1);
     END
     ELSE
     BEGIN
         IF OBJECT_ID(N'ret.CK_RetentionConfig_BlobPath', N'C') IS NOT NULL
             ALTER TABLE ret.RetentionConfig DROP CONSTRAINT CK_RetentionConfig_BlobPath;
-        ALTER TABLE ret.RetentionConfig ADD CONSTRAINT CK_RetentionConfig_BlobPath CHECK (LEN(BlobPath) > 0 AND BlobPath NOT LIKE N'/%' AND BlobPath NOT LIKE N'%/'
-            AND BlobPath NOT LIKE N'%//%' AND BlobPath NOT LIKE N'%\%'
+        ALTER TABLE ret.RetentionConfig ADD CONSTRAINT CK_RetentionConfig_BlobPath CHECK (LEN(BlobPath) > 0 AND BlobPath NOT LIKE N'%/%' AND BlobPath NOT LIKE N'%\%'
             AND BlobPath COLLATE Latin1_General_100_BIN2 = LOWER(BlobPath) COLLATE Latin1_General_100_BIN2);
     END;
 END;
@@ -505,4 +519,12 @@ GO
 -- (g) v0.3 procedure replaced by usp_TableRebuildPrepare / Swap / Abort
 IF OBJECT_ID(N'ret.usp_TableRebuild', N'P') IS NOT NULL
     DROP PROCEDURE ret.usp_TableRebuild;
+GO
+
+-- (h) v0.5 -> v0.6: log retention per table (MD-08, FSD 4.24)
+IF COL_LENGTH(N'ret.RetentionConfig', N'LogRetentionYears') IS NULL
+    ALTER TABLE ret.RetentionConfig ADD LogRetentionYears SMALLINT NOT NULL CONSTRAINT DF_RetentionConfig_LogYears DEFAULT (3);
+GO
+IF OBJECT_ID(N'ret.CK_RetentionConfig_LogYears', N'C') IS NULL
+    ALTER TABLE ret.RetentionConfig ADD CONSTRAINT CK_RetentionConfig_LogYears CHECK (LogRetentionYears >= 1);
 GO

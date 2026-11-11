@@ -171,6 +171,8 @@ def load(kind):
         if os.path.basename(f) != d["name"] + ".json": err(f"{f}: file name differs from resource name")
     return out
 LS, DS, PL, TR = load("linkedService"), load("dataset"), load("pipeline"), load("trigger")
+# linked services that exist in the factory but are not part of the package (none here)
+EXTERNAL_LS = set()   # pipeline/: linked services are part of the package
 
 def expr_strings(obj, skip_keys=()):
     """yield expression strings in obj, not descending into nested activity lists"""
@@ -343,7 +345,7 @@ for pname, p in PL.items():
 # datasets reference linked services; dataset() refs
 for dn, d in DS.items():
     ls = d["properties"]["linkedServiceName"]["referenceName"]
-    if ls not in LS: err(f"{dn}: linked service {ls} not found")
+    if ls not in LS and ls not in EXTERNAL_LS: err(f"{dn}: linked service {ls} not found")
     for s in expr_strings(d["properties"]):
         for m in re.finditer(r"dataset\(\)\.(\w+)", s):
             if m.group(1) not in d["properties"].get("parameters", {}): err(f"{dn}: dataset param {m.group(1)} missing")
@@ -392,8 +394,9 @@ def act_expr(pl, actname, path):
 
 print("\n--- scenario: StartRun (PL-01) ---")
 q = act_expr("PL_RET_01_InitialCutoff_Master", "LKP_StartRun", ["typeProperties", "source", "sqlReaderQuery"])
-for prm in [dict(TableConfigIdList="3,1", RunDate="", DowntimeReference="", TriggeredBy=""),
-            dict(TableConfigIdList="3,1", RunDate=" 2026-10-27 ", DowntimeReference="CR-0042", TriggeredBy="Dimas O'Neil")]:
+for prm in [dict(TableConfigIdList="3,1", RunDate="", DowntimeReference="", TriggeredBy="", ValidateOnly=False),
+            dict(TableConfigIdList="3,1", RunDate=" 2026-10-27 ", DowntimeReference="CR-0042", TriggeredBy="Dimas O'Neil", ValidateOnly=False),
+            dict(TableConfigIdList="", RunDate="", DowntimeReference="CR-0042", TriggeredBy="", ValidateOnly=True)]:
     print(evaluate(q, ctxm(prm)))
 print(evaluate(act_expr("PL_RET_02_DailyRoutine_Master", "LKP_StartRun", ["typeProperties", "source", "sqlReaderQuery"]),
                ctxm(dict(RunDate="", TriggeredBy=""), trig="ScheduleTrigger")))
@@ -430,8 +433,18 @@ q = act_expr("PL_RET_03_Table_Process", "EXEC_DataSteps", ["typeProperties", "pa
 for v in (None, 991):
     b = {"output": {"firstRow": {"TableLogId": 1, "PendingResumeTableLogId": v}}}
     print("PendingResumeTableLogId", v, "->", repr(evaluate(q, ctxm({}, acts={"LKP_BeginTable": b}))))
-q = act_expr("PL_RET_04_ArchiveExpiry", "EXEC_Level_Day", ["typeProperties", "parameters", "FolderPath"])
-print("DAY folder:", evaluate(q, ctxm({"BlobPath": "bos/jti_sd_branddistdetail", "ArchiveCutoffDate": "2018-10-31"})))
+q = act_expr("PL_RET_04_ArchiveExpiry", "EXEC_Level_File", ["typeProperties", "parameters", "FolderPath"])
+fp = evaluate(q, ctxm({"BlobPath": "bos.jti_sd_branddistdetail", "ArchiveCutoffDate": "2018-10-27"}))
+print("FILE level folder:", fp)
+if fp != "2018/bos.jti_sd_branddistdetail": err(f"PL_RET_04 FILE folder expected 2018/bos.jti_sd_branddistdetail, got {fp}")
+q = act_expr("PL_RET_04_ArchiveExpiry", "EXEC_Level_File", ["typeProperties", "parameters", "CutoffYear"])
+cy = evaluate(q, ctxm({"BlobPath": "x", "ArchiveCutoffDate": "2018-10-27"}))
+print("Cut-off year:", cy)
+if cy != 2018: err(f"PL_RET_04 CutoffYear expected 2018, got {cy}")
+q = act_expr("PL_RET_04A_ArchiveExpiry_Level", "DEL_ExpiredItem", ["typeProperties", "storeSettings", "wildcardFileName"])
+for it in ({"FolderPath": "2017/bos.t", "FileName": ""}, {"FolderPath": "2018/bos.t", "FileName": "bos.t_20181026.parquet"}):
+    c = ctxm({"Level": "YEAR"}); c["item"] = it
+    print("Delete wildcard:", it, "->", evaluate(q, c))
 
 print("\n--- scenario: export loop continue flag (PL-03E) ---")
 q = act_expr("PL_RET_03E_Export_BusinessDates", "SET_Continue_AfterOk", ["typeProperties", "value"])
@@ -442,7 +455,7 @@ for ce, rd in [(True, 4), (True, 0), (False, 3)]:
 print("\n--- scenario: expiry child items JSON (PL-04A) ---")
 q = act_expr("PL_RET_04A_ArchiveExpiry_Level", "LKP_GetExpiredArchiveFolders",
              ["typeProperties", "source", "storedProcedureParameters", "ChildItemsJson", "value"])
-for out in ({"exists": False}, {"exists": True, "childItems": [{"name": "year=2017", "type": "Folder"}]}):
+for out in ({"exists": False}, {"exists": True, "childItems": [{"name": "2017", "type": "Folder"}]}):
     v = evaluate(q, ctxm({}, acts={"GMD_ListChildItems": {"output": out}}))
     print(out.get("exists"), "->", v if isinstance(v, str) else json.dumps(v))
 

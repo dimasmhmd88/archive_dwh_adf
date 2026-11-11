@@ -3,7 +3,8 @@
     "properties": {
         "description": "DWH database (Azure SQL Database, schema ret). Authentication: ADF system-assigned managed identity (no credential in the definition, SEC-01/SEC-06). Identity needs EXECUTE on the ret procedures only (role ret_adf_executor, SQL script section 13). INT-01/INT-02.",
         "annotations": [
-            "FSD-DWH-RET-001 v0.2",
+            "FSD-DWH-RET v1.1",
+            "SQL v0.6",
             "DRAFT - not approved"
         ],
         "type": "AzureSqlDatabase",

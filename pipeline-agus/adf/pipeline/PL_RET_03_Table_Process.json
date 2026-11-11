@@ -142,7 +142,7 @@
                     ],
                     "ifFalseActivities": []
                 },
-                "description": "A VALIDATION run (process type kept in SQL for manual dry validation) stops after the checks of usp_BeginTable."
+                "description": "Dry validation (PL_RET_01 with ValidateOnly = true, process type VALIDATION, decision D-3) stops after the checks of usp_BeginTable; nothing is exported or deleted."
             },
             {
                 "name": "IF_ArchiveExpiry",
@@ -332,7 +332,8 @@
             "name": "DWH Retention/Internal"
         },
         "annotations": [
-            "FSD-DWH-RET-001 v0.2",
+            "FSD-DWH-RET v1.1",
+            "SQL v0.6",
             "DRAFT - not approved"
         ]
     }

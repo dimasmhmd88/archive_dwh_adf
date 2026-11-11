@@ -1,6 +1,6 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - schema ret - 02_triggers_seed.sql
-   Part of DWH_Retention_DB_Objects_v0.5.sql (DRAFT - not reviewed, not executed against any database).
+   Part of DWH_Retention_DB_Objects_v0.6.sql (DRAFT - not reviewed, not executed against any database).
    Triggers and seed data: parameter row and error codes (sections 2-3)
    Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
    ===================================================================================== */
@@ -102,7 +102,7 @@ USING (VALUES
     ('ERR-CFG-02', N'Configuration / metadata', N'V-02: retention column does not exist', 0),
     ('ERR-CFG-03', N'Configuration / metadata', N'V-03: retention column is not date, datetime, datetime2 or smalldatetime', 0),
     ('ERR-CFG-04', N'Configuration / metadata', N'V-04: retention column contains NULL values', 0),
-    ('ERR-CFG-05', N'Configuration / metadata', N'V-05: invalid retention periods (DBR-01)', 0),
+    ('ERR-CFG-05', N'Configuration / metadata', N'V-05: invalid retention periods (DWH, archive or log retention years < 1)', 0),
     ('ERR-CFG-06', N'Configuration / metadata', N'V-06: blob path or archive container missing or invalid', 0),
     ('ERR-CFG-07', N'Configuration / metadata', N'V-07: table not eligible for this run (inactive, completed, gates DBR-05, DBR-18, DBR-19)', 0),
     ('ERR-CFG-08', N'Configuration / metadata', N'V-08: column type or column name not supported by the Parquet format', 0),
@@ -114,7 +114,7 @@ USING (VALUES
     ('ERR-SYS-01', N'Database / connectivity',  N'Query, procedure or connection failure', 0),
     ('ERR-SYS-02', N'Run date',                 N'Run date later than the current UTC+7 date', 0),
     ('ERR-EXP-01', N'Export',                   N'Copy activity failed after retries', 0),
-    ('ERR-EXP-02', N'Export',                   N'Target archive file already exists', 0),
+    ('ERR-EXP-02', N'Export',                   N'Archive file for this table and business date may already exist from an earlier run (decision D-1): date refused, table FAILED, manual handling', 0),
     ('ERR-EXP-03', N'Export cleanup',           N'Files written by the failed run could not be removed (orphan files)', 0),
     ('ERR-VAL-01', N'Validation',               N'Per-date or total row-count mismatch between DWH and Parquet', 0),
     ('ERR-VAL-02', N'Validation',               N'Recount differs from the validated total', 0),
