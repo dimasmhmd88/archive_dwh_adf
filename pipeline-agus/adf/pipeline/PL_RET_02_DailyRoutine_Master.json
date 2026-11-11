@@ -19,7 +19,7 @@
                     "source": {
                         "type": "SqlServerSource",
                         "sqlReaderQuery": {
-                            "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''DAILY_ROUTINE'', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', 'NULL', ';')",
+                            "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''', 'DAILY_ROUTINE', ''', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', 'NULL', ';')",
                             "type": "Expression"
                         },
                         "queryTimeout": "00:30:00",
@@ -54,11 +54,32 @@
                 }
             },
             {
+                "name": "SET_ProcessType",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "SET_RunId",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "vProcessType",
+                    "value": {
+                        "value": "@activity('LKP_StartRun').output.firstRow.ProcessType",
+                        "type": "Expression"
+                    }
+                },
+                "description": "Process type as recorded by usp_StartRun (VALIDATION when ValidateOnly = true)."
+            },
+            {
                 "name": "LKP_GetTablesToProcess",
                 "type": "Lookup",
                 "dependsOn": [
                     {
-                        "activity": "SET_RunId",
+                        "activity": "SET_ProcessType",
                         "dependencyConditions": [
                             "Succeeded"
                         ]
@@ -136,7 +157,10 @@
                                         "value": "@string(item().TableConfigId)",
                                         "type": "Expression"
                                     },
-                                    "ProcessType": "DAILY_ROUTINE",
+                                    "ProcessType": {
+                                        "value": "@variables('vProcessType')",
+                                        "type": "Expression"
+                                    },
                                     "InitialCutoffMethod": {
                                         "value": "@item().InitialCutoffMethod",
                                         "type": "Expression"
@@ -261,13 +285,18 @@
             "vRunId": {
                 "type": "String",
                 "defaultValue": ""
+            },
+            "vProcessType": {
+                "type": "String",
+                "defaultValue": ""
             }
         },
         "folder": {
             "name": "DWH Retention"
         },
         "annotations": [
-            "FSD-DWH-RET-001 v0.2",
+            "FSD-DWH-RET v1.1",
+            "SQL v0.6",
             "DRAFT - not approved"
         ],
         "concurrency": 1

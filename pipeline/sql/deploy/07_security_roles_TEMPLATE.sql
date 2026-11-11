@@ -1,6 +1,6 @@
 /* =====================================================================================
-   DWH Data Retention and Archiving - schema ret - 06_security_roles_TEMPLATE.sql
-   Part of DWH_Retention_DB_Objects_v0.5.sql (DRAFT - not reviewed, not executed against any database).
+   DWH Data Retention and Archiving - schema ret - 07_security_roles_TEMPLATE.sql
+   Part of DWH_Retention_DB_Objects_v0.6.sql (DRAFT - not reviewed, not executed against any database).
    COMMENTED OUT TEMPLATE: roles and grants (section 13) and optional temporal history (section 14). Review with the DBA; replace placeholders.
    Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
    ===================================================================================== */
@@ -17,7 +17,11 @@ GO
        The owner (dbo) needs the rights used by the rebuild: CREATE TABLE, ALTER, DROP, sp_rename,
        DBCC CHECKIDENT, GRANT on the rebuilt table (dbo has them).
        Internal procedures (usp_WriteStepLog, usp_SetTableError, usp_GetTableSqlParts,
-       usp_AbortRunRebuilds) are not granted to anyone.
+       usp_AbortRunRebuilds, usp_PurgeTableLogs, usp_PurgeRunLogs) are not granted to anyone.
+       Database user of the ADF connection: FSD SEC-01 uses the factory managed identity (FROM EXTERNAL
+       PROVIDER). If the linked service (e.g. Agus_SqlServer_dwh, type SQL Server) signs in with an SQL
+       login instead, create that user with FOR LOGIN (or as a contained user) and add it to
+       ret_adf_executor - deviation from SEC-01 to be recorded (review decision D-2).
    =====================================================================================
 CREATE USER [<adf-managed-identity-name>] FROM EXTERNAL PROVIDER;
 
@@ -40,6 +44,7 @@ GRANT EXECUTE ON ret.usp_PostCheck                  TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_GetExpiredArchiveFolders   TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_LogExpiredArchiveResult    TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_LogCleanupResult           TO ret_adf_executor;
+GRANT EXECUTE ON ret.usp_GetRunArchiveFiles         TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_EndTable                   TO ret_adf_executor;
 GRANT EXECUTE ON ret.usp_EndRun                     TO ret_adf_executor;
 ALTER ROLE ret_adf_executor ADD MEMBER [<adf-managed-identity-name>];

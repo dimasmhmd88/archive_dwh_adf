@@ -1,7 +1,7 @@
 {
     "name": "PL_RET_01_InitialCutoff_Master",
     "properties": {
-        "description": "PL-01 / PRC-02 / FR-011: Initial Cut-off Run, triggered manually inside 21:00-05:00 UTC+7 (BR-17). TableConfigIdList EMPTY = automatic mode (CR-01, SQL v0.5): all active tables not yet COMPLETED, SMALL/MEDIUM before LARGE, child tables first; run again until every table is COMPLETED. TableConfigIdList given = explicit ordered list. LARGE or TABLE_REBUILD tables require DowntimeReference (BR-16, D-07). Concurrency 1.",
+        "description": "PL-01 / PRC-02 / FR-011: Initial Cut-off Run, triggered manually inside 21:00-05:00 UTC+7 (BR-17). TableConfigIdList EMPTY = automatic mode (CR-01, SQL v0.5): all active tables not yet COMPLETED, SMALL/MEDIUM before LARGE, child tables first; run again until every table is COMPLETED. TableConfigIdList given = explicit ordered list. LARGE or TABLE_REBUILD tables require DowntimeReference (BR-16, D-07). Concurrency 1. ValidateOnly = true: dry validation (process type VALIDATION, decision D-3, FSD 4.2 / 4.11): checks V-01..V-11 only, nothing exported or deleted, DowntimeReference ignored; empty TableConfigIdList = all active tables not COMPLETED.",
         "activities": [
             {
                 "name": "LKP_StartRun",
@@ -19,7 +19,7 @@
                     "source": {
                         "type": "AzureSqlSource",
                         "sqlReaderQuery": {
-                            "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''INITIAL_CUTOFF'', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', if(empty(trim(pipeline().parameters.DowntimeReference)), 'NULL', concat('N''', replace(trim(pipeline().parameters.DowntimeReference), '''', ''''''), '''')), ';')",
+                            "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''', if(bool(pipeline().parameters.ValidateOnly), 'VALIDATION', 'INITIAL_CUTOFF'), ''', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', if(bool(pipeline().parameters.ValidateOnly), 'NULL', if(empty(trim(pipeline().parameters.DowntimeReference)), 'NULL', concat('N''', replace(trim(pipeline().parameters.DowntimeReference), '''', ''''''), ''''))), ';')",
                             "type": "Expression"
                         },
                         "queryTimeout": "00:30:00",
@@ -54,11 +54,32 @@
                 }
             },
             {
+                "name": "SET_ProcessType",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "SET_RunId",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "vProcessType",
+                    "value": {
+                        "value": "@activity('LKP_StartRun').output.firstRow.ProcessType",
+                        "type": "Expression"
+                    }
+                },
+                "description": "Process type as recorded by usp_StartRun (VALIDATION when ValidateOnly = true)."
+            },
+            {
                 "name": "LKP_GetTablesToProcess",
                 "type": "Lookup",
                 "dependsOn": [
                     {
-                        "activity": "SET_RunId",
+                        "activity": "SET_ProcessType",
                         "dependencyConditions": [
                             "Succeeded"
                         ]
@@ -143,7 +164,10 @@
                                         "value": "@string(item().TableConfigId)",
                                         "type": "Expression"
                                     },
-                                    "ProcessType": "INITIAL_CUTOFF",
+                                    "ProcessType": {
+                                        "value": "@variables('vProcessType')",
+                                        "type": "Expression"
+                                    },
                                     "InitialCutoffMethod": {
                                         "value": "@item().InitialCutoffMethod",
                                         "type": "Expression"
@@ -270,10 +294,18 @@
             "TriggeredBy": {
                 "type": "string",
                 "defaultValue": ""
+            },
+            "ValidateOnly": {
+                "type": "bool",
+                "defaultValue": false
             }
         },
         "variables": {
             "vRunId": {
+                "type": "String",
+                "defaultValue": ""
+            },
+            "vProcessType": {
                 "type": "String",
                 "defaultValue": ""
             }
@@ -282,7 +314,8 @@
             "name": "DWH Retention"
         },
         "annotations": [
-            "FSD-DWH-RET-001 v0.2",
+            "FSD-DWH-RET v1.1",
+            "SQL v0.6",
             "DRAFT - not approved"
         ],
         "concurrency": 1

@@ -1,6 +1,6 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - schema ret - 03_functions.sql
-   Part of DWH_Retention_DB_Objects_v0.5.sql, v0.5.1 collation fix (DRAFT - not reviewed, not executed against any database).
+   Part of DWH_Retention_DB_Objects_v0.6.sql (DRAFT - not reviewed, not executed against any database).
    Functions (section 4)
    Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
    ===================================================================================== */
@@ -66,7 +66,7 @@ BEGIN
 END;
 GO
 
--- Archive folder <BlobPath>/year=YYYY/month=MM/day=DD (MD-07)
+-- Archive folder <yyyy>/<BlobPath> (MD-07, FSD 4.7): one folder per year of the business date, then one per table
 CREATE OR ALTER FUNCTION ret.fn_ArchiveFolderPath
 (
     @BlobPath       NVARCHAR(400),
@@ -75,24 +75,21 @@ CREATE OR ALTER FUNCTION ret.fn_ArchiveFolderPath
 RETURNS NVARCHAR(1024)
 AS
 BEGIN
-    DECLARE @d NCHAR(8) = CONVERT(NCHAR(8), @BusinessDate, 112);   -- yyyyMMdd
-    RETURN @BlobPath + N'/year=' + SUBSTRING(@d, 1, 4) + N'/month=' + SUBSTRING(@d, 5, 2) + N'/day=' + SUBSTRING(@d, 7, 2);
+    RETURN CONVERT(NCHAR(4), YEAR(@BusinessDate)) + N'/' + @BlobPath;
 END;
 GO
 
--- Archive file name with RunId; never overwritten (DBR-07)
+-- Archive file name <BlobPath>_<yyyyMMdd>.parquet (MD-07, FSD 4.7). The RunId is recorded in
+-- ret.RetentionArchiveDate; an existing file of an earlier run is never overwritten (decision D-1).
 CREATE OR ALTER FUNCTION ret.fn_ArchiveFileName
 (
-    @SchemaName     SYSNAME,
-    @TableName      SYSNAME,
-    @BusinessDate   DATE,
-    @RunId          BIGINT
+    @BlobPath       NVARCHAR(400),
+    @BusinessDate   DATE
 )
 RETURNS NVARCHAR(400)
 AS
 BEGIN
-    RETURN @SchemaName + N'_' + @TableName + N'_' + CONVERT(NCHAR(8), @BusinessDate, 112)
-         + N'_' + CONVERT(NVARCHAR(20), @RunId) + N'.parquet';
+    RETURN @BlobPath + N'_' + CONVERT(NCHAR(8), @BusinessDate, 112) + N'.parquet';
 END;
 GO
 

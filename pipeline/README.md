@@ -3,15 +3,31 @@
 | Item | Value |
 |---|---|
 | Package | ADF resources for FSD-DWH-RET-001 |
-| Package version | 0.2 – Draft for review |
-| Date | 31 October 2026 |
+| Package version | 0.3 – Draft for review (see section 0 for the changes of 11 Nov 2026) |
+| Date | 11 November 2026 (v0.2: 31 October 2026) |
 | Status | **Not approved.** Not imported or executed in any Data Factory. |
-| Sources | FSD_DWH_Data_Retention_v0.2 301026.docx (FSD v0.2, Draft for Review, not approved); DWH_Retention_DB_Objects_v0.4.sql + DWH_Retention_DB_Objects_v0.5_patch.sql (drafts, not executed) |
-| Contract followed | "ADF CALL SEQUENCE PER TABLE" in the SQL v0.4 header; procedure parameters and result columns of SQL v0.4 |
+| Sources | FSD_DWH_Data_Retention_v1.1 (Final Document/, FSD-DWH-RET v1.1, 10 Nov 2026, Draft for Review, not approved); `sql/DWH_Retention_DB_Objects_v0.6.sql` (draft, not executed). Earlier: FSD v0.2, SQL v0.4/v0.5 |
+| Contract followed | "ADF CALL SEQUENCE PER TABLE" in the SQL v0.6 header; procedure parameters and result columns in `tools/sql_contract.json` (SQL v0.6) |
 
 The pipelines contain no business logic of their own. Every decision (table selection, checks, cut-off dates, validation, deletion, rebuild, expiry) is taken by the schema `ret` procedures; ADF only orchestrates, copies rows to Parquet and lists/deletes blob folders (FSD 6.1, FR-021).
 
 ---
+
+## 0. Changes in v0.3 (11 Nov 2026, alignment with FSD v1.1)
+
+The same changes are made in `../pipeline-agus/` (variant with the user's linked services `Agus_*`). Details are in `../pipeline-agus/README.md` section 2 and `sql/README.md`.
+
+- **PL_RET_01:**
+  - new parameter `ValidateOnly`: dry validation, process type VALIDATION (decision D-3)
+  - the process type is taken from `usp_StartRun`
+- **PL_RET_03F:** deletes exactly the files of the run listed by `usp_GetRunArchiveFiles` (FSD 4.18). The pattern `*_<RunId>.parquet` is gone, because file names no longer contain the RunId (MD-07).
+- **PL_RET_04 / 04A:** levels YEAR (container root, folders `<yyyy>/<BlobPath>`) and FILE (`<cut-off year>/<BlobPath>`, files `<BlobPath>_<yyyyMMdd>.parquet`) (FSD 4.13).
+- **SQL v0.6:**
+  - archive layout MD-07
+  - D-1 (ERR-EXP-02)
+  - log retention MD-08
+  - monitoring views
+- **Superseded in this README:** findings F-01..F-12 in section 4 and the verification checks in section 6 refer to v0.2. They are kept for history, except where section 0 changes them. In particular, **F-07 is fixed**: VALIDATION no longer drops leftover rebuild tables.
 
 ## 1. Package contents
 
@@ -28,7 +44,7 @@ arm/
 tools/
   build_adf.py               generator of all JSON files (single source; edit here, then regenerate)
   validate_adf.py            static checks + scenario evaluation of the dynamic T-SQL expressions
-  sql_contract.json          procedure parameters / result columns transcribed from SQL v0.4
+  sql_contract.json          procedure parameters / result columns (SQL v0.6)
 ```
 
 ## 2. Pipeline hierarchy
@@ -50,8 +66,8 @@ DWH Retention/PL_RET_02_DailyRoutine_Master   (PL-02, trigger 21:00 WIB, conc. 1
      │       IC_NODATA → usp_PostCheck (IC without eligible rows reaches COMPLETED)
      ├─ PL_RET_03E_Export_BusinessDates   Until: usp_GetExportPlan(MaxRows 1) → Copy (source usp_ExportSourceRows,
      │                                    Parquet sink) → usp_LogExportResult; stops on ContinueExport = 0
-     ├─ PL_RET_03F_Table_FileCleanup      Delete <schema>_<table>_*_<RunId>.parquet under <BlobPath> → usp_LogCleanupResult
-     └─ PL_RET_04_ArchiveExpiry (PL-04)   YEAR → MONTH → DAY levels via PL_RET_04A_ArchiveExpiry_Level:
+     ├─ PL_RET_03F_Table_FileCleanup      usp_GetRunArchiveFiles → per file: exists? → Delete → usp_LogCleanupResult
+     └─ PL_RET_04_ArchiveExpiry (PL-04)   levels YEAR (container root) → FILE (cut-off year) via PL_RET_04A_ArchiveExpiry_Level:
                                           Get Metadata → usp_GetExpiredArchiveFolders → Delete folders → usp_LogExpiredArchiveResult
 ```
 
@@ -121,7 +137,7 @@ Facts are stated as found in the sources; recommendations are marked [REC].
 
 **Prerequisites (before import)**
 
-1. Deploy `DWH_Retention_DB_Objects_v0.4.sql`, then `sql/DWH_Retention_DB_Objects_v0.5_patch.sql`, to the DWH database (development first).
+1. Deploy `sql/DWH_Retention_DB_Objects_v0.6.sql` (or `sql/deploy/01`–`05`) to the DWH database (development first), then `sql/config/10_insert_retention_config.sql`.
 2. Create the database user for the factory managed identity and add it to `ret_adf_executor` (SQL section 13, commented out; review with the DBA).
 3. Give the factory managed identity *Storage Blob Data Contributor* on the archive container only (SEC-05).
 4. `UPDATE ret.RetentionParameter SET ArchiveContainer = N'<container>' WHERE ParameterSetId = 1;` (D-02).
@@ -184,3 +200,4 @@ The validator checks expression syntax, activity references and their scope, ups
 |---|---|---|---|
 | 0.1 | 31 Oct 2026 | Prepared with Claude for the project team (owner TBD) | First draft from FSD v0.2 and SQL v0.4 |
 | 0.2 | 31 Oct 2026 | Prepared with Claude for the project team (owner TBD) | Option A: PL_RET_05 removed; folders Run / Internal; TableConfigIdList optional (automatic mode, CR-01, SQL v0.5 patch); import option C; finding F-12 |
+| 0.3 | 11 Nov 2026 | Prepared with Claude for the project team (owner TBD) | Alignment with FSD v1.1 and SQL v0.6: PL_RET_01 ValidateOnly (D-3); PL_RET_03F file list (FSD 4.18); PL_RET_04/04A YEAR/FILE (FSD 4.13); annotations; folders "DWH Retention" / "DWH Retention/Internal" (PR #4) |

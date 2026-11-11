@@ -31,7 +31,8 @@
                     "type": "LinkedServiceReference"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ],
                 "folder": {
@@ -65,7 +66,8 @@
                     }
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ],
                 "folder": {
@@ -113,7 +115,8 @@
                     }
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ],
                 "folder": {
@@ -141,79 +144,77 @@
             "type": "Microsoft.DataFactory/factories/pipelines",
             "apiVersion": "2018-06-01",
             "properties": {
-                "description": "FR-018 / DBR-08: remove the archive files written by a failed or stopped run for one table, then record the result with ret.usp_LogCleanupResult (success: export rows marked REMOVED; failure: orphan-file flag, ERR-EXP-03).",
+                "description": "FSD 4.18 / 5.4 / 6.1: remove exactly the archive files that this table log wrote, as listed by ret.usp_GetRunArchiveFiles (layout MD-07, no RunId in the file name), then record the result with ret.usp_LogCleanupResult (success: dates marked REMOVED; failure: orphan-file flag, ERR-EXP-03).",
                 "activities": [
                     {
-                        "name": "GMD_TableRootExists",
-                        "type": "GetMetadata",
+                        "name": "LKP_GetRunArchiveFiles",
+                        "type": "Lookup",
                         "dependsOn": [],
                         "policy": {
                             "timeout": "0.00:30:00",
-                            "retry": 2,
+                            "retry": 1,
                             "retryIntervalInSeconds": 60,
                             "secureOutput": false,
                             "secureInput": false
                         },
                         "userProperties": [],
                         "typeProperties": {
-                            "dataset": {
-                                "referenceName": "DS_RET_ArchiveFolder",
-                                "type": "DatasetReference",
-                                "parameters": {
-                                    "Container": {
-                                        "value": "@pipeline().parameters.ArchiveContainer",
-                                        "type": "Expression"
-                                    },
-                                    "FolderPath": {
-                                        "value": "@pipeline().parameters.BlobPath",
-                                        "type": "Expression"
+                            "source": {
+                                "type": "SqlServerSource",
+                                "sqlReaderStoredProcedureName": "ret.usp_GetRunArchiveFiles",
+                                "storedProcedureParameters": {
+                                    "TableLogId": {
+                                        "type": "Int64",
+                                        "value": {
+                                            "value": "@pipeline().parameters.TableLogId",
+                                            "type": "Expression"
+                                        }
                                     }
-                                }
+                                },
+                                "queryTimeout": "00:30:00",
+                                "partitionOption": "None"
                             },
-                            "fieldList": [
-                                "exists"
-                            ],
-                            "storeSettings": {
-                                "type": "AzureBlobStorageReadSettings",
-                                "recursive": false,
-                                "enablePartitionDiscovery": false
+                            "dataset": {
+                                "referenceName": "DS_RET_SqlDb",
+                                "type": "DatasetReference"
                             },
-                            "formatSettings": {
-                                "type": "BinaryReadSettings"
-                            }
-                        }
+                            "firstRowOnly": false
+                        },
+                        "description": "FSD 4.18: files this table log may have written (ExportStatus SUCCEEDED, FAILED or STOPPED)."
                     },
                     {
-                        "name": "IF_TableRootExists",
-                        "type": "IfCondition",
+                        "name": "FE_DeleteRunFiles",
+                        "type": "ForEach",
                         "dependsOn": [
                             {
-                                "activity": "GMD_TableRootExists",
+                                "activity": "LKP_GetRunArchiveFiles",
                                 "dependencyConditions": [
                                     "Succeeded"
                                 ]
                             }
                         ],
                         "userProperties": [],
+                        "description": "One file per business date; a missing folder means the file was never written.",
                         "typeProperties": {
-                            "expression": {
-                                "value": "@activity('GMD_TableRootExists').output.exists",
+                            "items": {
+                                "value": "@activity('LKP_GetRunArchiveFiles').output.value",
                                 "type": "Expression"
                             },
-                            "ifTrueActivities": [
+                            "isSequential": false,
+                            "batchCount": 4,
+                            "activities": [
                                 {
-                                    "name": "DEL_RunFiles",
-                                    "type": "Delete",
+                                    "name": "GMD_RunFileFolderExists",
+                                    "type": "GetMetadata",
                                     "dependsOn": [],
                                     "policy": {
-                                        "timeout": "0.01:00:00",
+                                        "timeout": "0.00:30:00",
                                         "retry": 2,
                                         "retryIntervalInSeconds": 60,
                                         "secureOutput": false,
                                         "secureInput": false
                                     },
                                     "userProperties": [],
-                                    "description": "Deletes only the files written by this RunId for this table: <schema>_<table>_*_<RunId>.parquet under <BlobPath> (all date folders).",
                                     "typeProperties": {
                                         "dataset": {
                                             "referenceName": "DS_RET_ArchiveFolder",
@@ -224,176 +225,148 @@
                                                     "type": "Expression"
                                                 },
                                                 "FolderPath": {
-                                                    "value": "@pipeline().parameters.BlobPath",
+                                                    "value": "@item().FolderPath",
                                                     "type": "Expression"
                                                 }
                                             }
                                         },
-                                        "enableLogging": false,
+                                        "fieldList": [
+                                            "exists"
+                                        ],
                                         "storeSettings": {
                                             "type": "AzureBlobStorageReadSettings",
-                                            "recursive": true,
-                                            "wildcardFileName": {
-                                                "value": "@concat(pipeline().parameters.SchemaName, '_', pipeline().parameters.TableName, '_*_', pipeline().parameters.RunId, '.parquet')",
-                                                "type": "Expression"
-                                            },
+                                            "recursive": false,
                                             "enablePartitionDiscovery": false
+                                        },
+                                        "formatSettings": {
+                                            "type": "BinaryReadSettings"
                                         }
                                     }
                                 },
                                 {
-                                    "name": "LKP_LogCleanup_Succeeded",
-                                    "type": "Lookup",
+                                    "name": "IF_RunFileFolderExists",
+                                    "type": "IfCondition",
                                     "dependsOn": [
                                         {
-                                            "activity": "DEL_RunFiles",
+                                            "activity": "GMD_RunFileFolderExists",
                                             "dependencyConditions": [
                                                 "Succeeded"
                                             ]
                                         }
                                     ],
-                                    "policy": {
-                                        "timeout": "0.00:10:00",
-                                        "retry": 2,
-                                        "retryIntervalInSeconds": 30,
-                                        "secureOutput": false,
-                                        "secureInput": false
-                                    },
                                     "userProperties": [],
                                     "typeProperties": {
-                                        "source": {
-                                            "type": "SqlServerSource",
-                                            "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
-                                            "storedProcedureParameters": {
-                                                "TableLogId": {
-                                                    "type": "Int64",
-                                                    "value": {
-                                                        "value": "@pipeline().parameters.TableLogId",
-                                                        "type": "Expression"
-                                                    }
-                                                },
-                                                "Status": {
-                                                    "type": "String",
-                                                    "value": "SUCCEEDED"
-                                                }
-                                            },
-                                            "queryTimeout": "00:30:00",
-                                            "partitionOption": "None"
+                                        "expression": {
+                                            "value": "@activity('GMD_RunFileFolderExists').output.exists",
+                                            "type": "Expression"
                                         },
-                                        "dataset": {
-                                            "referenceName": "DS_RET_SqlDb",
-                                            "type": "DatasetReference"
-                                        },
-                                        "firstRowOnly": true
-                                    }
-                                },
-                                {
-                                    "name": "LKP_LogCleanup_DeleteFailed",
-                                    "type": "Lookup",
-                                    "dependsOn": [
-                                        {
-                                            "activity": "DEL_RunFiles",
-                                            "dependencyConditions": [
-                                                "Failed"
-                                            ]
-                                        }
-                                    ],
-                                    "policy": {
-                                        "timeout": "0.00:10:00",
-                                        "retry": 2,
-                                        "retryIntervalInSeconds": 30,
-                                        "secureOutput": false,
-                                        "secureInput": false
-                                    },
-                                    "userProperties": [],
-                                    "typeProperties": {
-                                        "source": {
-                                            "type": "SqlServerSource",
-                                            "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
-                                            "storedProcedureParameters": {
-                                                "TableLogId": {
-                                                    "type": "Int64",
-                                                    "value": {
-                                                        "value": "@pipeline().parameters.TableLogId",
-                                                        "type": "Expression"
-                                                    }
+                                        "ifTrueActivities": [
+                                            {
+                                                "name": "DEL_RunFile",
+                                                "type": "Delete",
+                                                "dependsOn": [],
+                                                "policy": {
+                                                    "timeout": "0.00:30:00",
+                                                    "retry": 2,
+                                                    "retryIntervalInSeconds": 60,
+                                                    "secureOutput": false,
+                                                    "secureInput": false
                                                 },
-                                                "Status": {
-                                                    "type": "String",
-                                                    "value": "FAILED"
-                                                },
-                                                "ErrorMessage": {
-                                                    "type": "String",
-                                                    "value": {
-                                                        "value": "@activity('DEL_RunFiles').error.message",
-                                                        "type": "Expression"
+                                                "userProperties": [],
+                                                "description": "Deletes exactly one file of this run: <FolderPath>/<FileName> from ret.RetentionArchiveDate (no pattern; files of other runs are never touched).",
+                                                "typeProperties": {
+                                                    "dataset": {
+                                                        "referenceName": "DS_RET_ArchiveFolder",
+                                                        "type": "DatasetReference",
+                                                        "parameters": {
+                                                            "Container": {
+                                                                "value": "@pipeline().parameters.ArchiveContainer",
+                                                                "type": "Expression"
+                                                            },
+                                                            "FolderPath": {
+                                                                "value": "@item().FolderPath",
+                                                                "type": "Expression"
+                                                            }
+                                                        }
+                                                    },
+                                                    "enableLogging": false,
+                                                    "storeSettings": {
+                                                        "type": "AzureBlobStorageReadSettings",
+                                                        "recursive": false,
+                                                        "wildcardFileName": {
+                                                            "value": "@item().FileName",
+                                                            "type": "Expression"
+                                                        },
+                                                        "enablePartitionDiscovery": false
                                                     }
                                                 }
-                                            },
-                                            "queryTimeout": "00:30:00",
-                                            "partitionOption": "None"
-                                        },
-                                        "dataset": {
-                                            "referenceName": "DS_RET_SqlDb",
-                                            "type": "DatasetReference"
-                                        },
-                                        "firstRowOnly": true
-                                    }
-                                }
-                            ],
-                            "ifFalseActivities": [
-                                {
-                                    "name": "LKP_LogCleanup_NothingToRemove",
-                                    "type": "Lookup",
-                                    "dependsOn": [],
-                                    "policy": {
-                                        "timeout": "0.00:10:00",
-                                        "retry": 2,
-                                        "retryIntervalInSeconds": 30,
-                                        "secureOutput": false,
-                                        "secureInput": false
-                                    },
-                                    "userProperties": [],
-                                    "typeProperties": {
-                                        "source": {
-                                            "type": "SqlServerSource",
-                                            "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
-                                            "storedProcedureParameters": {
-                                                "TableLogId": {
-                                                    "type": "Int64",
-                                                    "value": {
-                                                        "value": "@pipeline().parameters.TableLogId",
-                                                        "type": "Expression"
-                                                    }
-                                                },
-                                                "Status": {
-                                                    "type": "String",
-                                                    "value": "SUCCEEDED"
-                                                },
-                                                "FilesRemoved": {
-                                                    "type": "Int32",
-                                                    "value": 0
-                                                }
-                                            },
-                                            "queryTimeout": "00:30:00",
-                                            "partitionOption": "None"
-                                        },
-                                        "dataset": {
-                                            "referenceName": "DS_RET_SqlDb",
-                                            "type": "DatasetReference"
-                                        },
-                                        "firstRowOnly": true
+                                            }
+                                        ],
+                                        "ifFalseActivities": []
                                     }
                                 }
                             ]
                         }
                     },
                     {
-                        "name": "LKP_LogCleanup_ListFailed",
+                        "name": "LKP_LogCleanup_Succeeded",
                         "type": "Lookup",
                         "dependsOn": [
                             {
-                                "activity": "GMD_TableRootExists",
+                                "activity": "FE_DeleteRunFiles",
+                                "dependencyConditions": [
+                                    "Succeeded"
+                                ]
+                            }
+                        ],
+                        "policy": {
+                            "timeout": "0.00:10:00",
+                            "retry": 2,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "source": {
+                                "type": "SqlServerSource",
+                                "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
+                                "storedProcedureParameters": {
+                                    "TableLogId": {
+                                        "type": "Int64",
+                                        "value": {
+                                            "value": "@pipeline().parameters.TableLogId",
+                                            "type": "Expression"
+                                        }
+                                    },
+                                    "Status": {
+                                        "type": "String",
+                                        "value": "SUCCEEDED"
+                                    },
+                                    "FilesRemoved": {
+                                        "type": "Int32",
+                                        "value": {
+                                            "value": "@length(activity('LKP_GetRunArchiveFiles').output.value)",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                },
+                                "queryTimeout": "00:30:00",
+                                "partitionOption": "None"
+                            },
+                            "dataset": {
+                                "referenceName": "DS_RET_SqlDb",
+                                "type": "DatasetReference"
+                            },
+                            "firstRowOnly": true
+                        }
+                    },
+                    {
+                        "name": "LKP_LogCleanup_DeleteFailed",
+                        "type": "Lookup",
+                        "dependsOn": [
+                            {
+                                "activity": "FE_DeleteRunFiles",
                                 "dependencyConditions": [
                                     "Failed"
                                 ]
@@ -426,7 +399,60 @@
                                     "ErrorMessage": {
                                         "type": "String",
                                         "value": {
-                                            "value": "@activity('GMD_TableRootExists').error.message",
+                                            "value": "@concat('One or more archive files of this run could not be deleted (', pipeline().parameters.BlobPath, '). ADF run ', pipeline().RunId)",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                },
+                                "queryTimeout": "00:30:00",
+                                "partitionOption": "None"
+                            },
+                            "dataset": {
+                                "referenceName": "DS_RET_SqlDb",
+                                "type": "DatasetReference"
+                            },
+                            "firstRowOnly": true
+                        }
+                    },
+                    {
+                        "name": "LKP_LogCleanup_ListFailed",
+                        "type": "Lookup",
+                        "dependsOn": [
+                            {
+                                "activity": "LKP_GetRunArchiveFiles",
+                                "dependencyConditions": [
+                                    "Failed"
+                                ]
+                            }
+                        ],
+                        "policy": {
+                            "timeout": "0.00:10:00",
+                            "retry": 2,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                            "source": {
+                                "type": "SqlServerSource",
+                                "sqlReaderStoredProcedureName": "ret.usp_LogCleanupResult",
+                                "storedProcedureParameters": {
+                                    "TableLogId": {
+                                        "type": "Int64",
+                                        "value": {
+                                            "value": "@pipeline().parameters.TableLogId",
+                                            "type": "Expression"
+                                        }
+                                    },
+                                    "Status": {
+                                        "type": "String",
+                                        "value": "FAILED"
+                                    },
+                                    "ErrorMessage": {
+                                        "type": "String",
+                                        "value": {
+                                            "value": "@activity('LKP_GetRunArchiveFiles').error.message",
                                             "type": "Expression"
                                         }
                                     }
@@ -467,7 +493,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -1235,7 +1262,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -1733,7 +1761,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -2324,7 +2353,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -2611,7 +2641,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -2943,7 +2974,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -2959,7 +2991,7 @@
             "type": "Microsoft.DataFactory/factories/pipelines",
             "apiVersion": "2018-06-01",
             "properties": {
-                "description": "PRC-04 one folder level (YEAR, MONTH or DAY): list child folders, let ret.usp_GetExpiredArchiveFolders decide, delete whole expired folders recursively, record the result (ERR-ARC-01 on failure; idempotent, next run completes).",
+                "description": "FSD 4.13 / 5.4 one level (YEAR or FILE): list the items, let ret.usp_GetExpiredArchiveFolders decide, delete the expired year folders of this table or the expired files, record the result (ERR-ARC-01 on failure; the next Daily Routine completes).",
                 "activities": [
                     {
                         "name": "GMD_ListChildItems",
@@ -2973,7 +3005,7 @@
                             "secureInput": false
                         },
                         "userProperties": [],
-                        "description": "Child items of one folder level; 'exists' keeps a missing folder from failing the activity.",
+                        "description": "YEAR: container root (year folders). FILE: folder <cut-off year>/<BlobPath>. 'exists' keeps a missing folder from failing the activity.",
                         "typeProperties": {
                             "dataset": {
                                 "referenceName": "DS_RET_ArchiveFolder",
@@ -3054,13 +3086,6 @@
                                             "value": "@pipeline().parameters.CutoffYear",
                                             "type": "Expression"
                                         }
-                                    },
-                                    "Month": {
-                                        "type": "Int16",
-                                        "value": {
-                                            "value": "@pipeline().parameters.CutoffMonth",
-                                            "type": "Expression"
-                                        }
                                     }
                                 },
                                 "queryTimeout": "00:30:00",
@@ -3072,10 +3097,10 @@
                             },
                             "firstRowOnly": false
                         },
-                        "description": "Pattern and date parsed in SQL (DBR-12); returns DELETE (whole folder before the archive cut-off) and DESCEND rows. Year/Month = archive cut-off year/month (used only at MONTH/DAY level)."
+                        "description": "Names and dates parsed in SQL; returns DELETE rows only (YEAR: <yyyy>/<BlobPath> before the cut-off year; FILE: files dated before the archive cut-off). Non-matching names are never deleted."
                     },
                     {
-                        "name": "FLT_FoldersToDelete",
+                        "name": "FLT_ItemsToDelete",
                         "type": "Filter",
                         "dependsOn": [
                             {
@@ -3098,31 +3123,32 @@
                         }
                     },
                     {
-                        "name": "FE_DeleteExpiredFolders",
+                        "name": "FE_DeleteExpiredItems",
                         "type": "ForEach",
                         "dependsOn": [
                             {
-                                "activity": "FLT_FoldersToDelete",
+                                "activity": "FLT_ItemsToDelete",
                                 "dependencyConditions": [
                                     "Succeeded"
                                 ]
                             }
                         ],
                         "userProperties": [],
+                        "description": "Parallel, batch 4 (FSD 6.1). The year folder is shared by all tables, so the table folder may not exist.",
                         "typeProperties": {
                             "items": {
-                                "value": "@activity('FLT_FoldersToDelete').output.value",
+                                "value": "@activity('FLT_ItemsToDelete').output.value",
                                 "type": "Expression"
                             },
                             "isSequential": false,
                             "batchCount": 4,
                             "activities": [
                                 {
-                                    "name": "DEL_ExpiredFolder",
-                                    "type": "Delete",
+                                    "name": "GMD_ItemFolderExists",
+                                    "type": "GetMetadata",
                                     "dependsOn": [],
                                     "policy": {
-                                        "timeout": "0.01:00:00",
+                                        "timeout": "0.00:30:00",
                                         "retry": 2,
                                         "retryIntervalInSeconds": 60,
                                         "secureOutput": false,
@@ -3144,12 +3170,82 @@
                                                 }
                                             }
                                         },
-                                        "enableLogging": false,
+                                        "fieldList": [
+                                            "exists"
+                                        ],
                                         "storeSettings": {
                                             "type": "AzureBlobStorageReadSettings",
-                                            "recursive": true,
+                                            "recursive": false,
                                             "enablePartitionDiscovery": false
+                                        },
+                                        "formatSettings": {
+                                            "type": "BinaryReadSettings"
                                         }
+                                    }
+                                },
+                                {
+                                    "name": "IF_ItemFolderExists",
+                                    "type": "IfCondition",
+                                    "dependsOn": [
+                                        {
+                                            "activity": "GMD_ItemFolderExists",
+                                            "dependencyConditions": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    ],
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "expression": {
+                                            "value": "@activity('GMD_ItemFolderExists').output.exists",
+                                            "type": "Expression"
+                                        },
+                                        "ifTrueActivities": [
+                                            {
+                                                "name": "DEL_ExpiredItem",
+                                                "type": "Delete",
+                                                "dependsOn": [],
+                                                "policy": {
+                                                    "timeout": "0.01:00:00",
+                                                    "retry": 2,
+                                                    "retryIntervalInSeconds": 60,
+                                                    "secureOutput": false,
+                                                    "secureInput": false
+                                                },
+                                                "userProperties": [],
+                                                "description": "YEAR: whole folder <yyyy>/<BlobPath> (recursive). FILE: one file <BlobPath>_<yyyyMMdd>.parquet.",
+                                                "typeProperties": {
+                                                    "dataset": {
+                                                        "referenceName": "DS_RET_ArchiveFolder",
+                                                        "type": "DatasetReference",
+                                                        "parameters": {
+                                                            "Container": {
+                                                                "value": "@pipeline().parameters.ArchiveContainer",
+                                                                "type": "Expression"
+                                                            },
+                                                            "FolderPath": {
+                                                                "value": "@item().FolderPath",
+                                                                "type": "Expression"
+                                                            }
+                                                        }
+                                                    },
+                                                    "enableLogging": false,
+                                                    "storeSettings": {
+                                                        "type": "AzureBlobStorageReadSettings",
+                                                        "recursive": {
+                                                            "value": "@equals(pipeline().parameters.Level, 'YEAR')",
+                                                            "type": "Expression"
+                                                        },
+                                                        "wildcardFileName": {
+                                                            "value": "@if(empty(item().FileName), '*', item().FileName)",
+                                                            "type": "Expression"
+                                                        },
+                                                        "enablePartitionDiscovery": false
+                                                    }
+                                                }
+                                            }
+                                        ],
+                                        "ifFalseActivities": []
                                     }
                                 }
                             ]
@@ -3160,7 +3256,7 @@
                         "type": "Lookup",
                         "dependsOn": [
                             {
-                                "activity": "FE_DeleteExpiredFolders",
+                                "activity": "FE_DeleteExpiredItems",
                                 "dependencyConditions": [
                                     "Succeeded"
                                 ]
@@ -3193,7 +3289,14 @@
                                     "FoldersDeleted": {
                                         "type": "Int32",
                                         "value": {
-                                            "value": "@activity('FLT_FoldersToDelete').output.FilteredItemsCount",
+                                            "value": "@if(equals(pipeline().parameters.Level, 'YEAR'), activity('FLT_ItemsToDelete').output.FilteredItemsCount, 0)",
+                                            "type": "Expression"
+                                        }
+                                    },
+                                    "FilesDeleted": {
+                                        "type": "Int32",
+                                        "value": {
+                                            "value": "@if(equals(pipeline().parameters.Level, 'YEAR'), 0, activity('FLT_ItemsToDelete').output.FilteredItemsCount)",
                                             "type": "Expression"
                                         }
                                     }
@@ -3213,7 +3316,7 @@
                         "type": "Lookup",
                         "dependsOn": [
                             {
-                                "activity": "FE_DeleteExpiredFolders",
+                                "activity": "FE_DeleteExpiredItems",
                                 "dependencyConditions": [
                                     "Failed"
                                 ]
@@ -3246,7 +3349,7 @@
                                     "ErrorMessage": {
                                         "type": "String",
                                         "value": {
-                                            "value": "@concat('ERR-ARC-01: one or more expired folders could not be deleted at level ', pipeline().parameters.Level, ' of ', pipeline().parameters.FolderPath, '. ADF run ', pipeline().RunId)",
+                                            "value": "@concat('ERR-ARC-01: one or more expired items could not be deleted at level ', pipeline().parameters.Level, ' of ', if(empty(pipeline().parameters.FolderPath), '<container root>', pipeline().parameters.FolderPath), '. ADF run ', pipeline().RunId)",
                                             "type": "Expression"
                                         }
                                     }
@@ -3376,15 +3479,13 @@
                         "type": "string"
                     },
                     "FolderPath": {
-                        "type": "string"
+                        "type": "string",
+                        "defaultValue": ""
                     },
                     "Level": {
                         "type": "string"
                     },
                     "CutoffYear": {
-                        "type": "int"
-                    },
-                    "CutoffMonth": {
                         "type": "int"
                     }
                 },
@@ -3393,7 +3494,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -3407,7 +3509,7 @@
             "type": "Microsoft.DataFactory/factories/pipelines",
             "apiVersion": "2018-06-01",
             "properties": {
-                "description": "PL-04 / PRC-04 / FR-013 (DR-05, BR-14): delete archive folders with business date before the archive cut-off date, traversing year=YYYY -> month=MM -> day=DD (MD-07, Figure 7). Folder paths of the cut-off year and month are derived from ArchiveCutoffDate; a missing folder is a no-op.",
+                "description": "FSD 4.13 / 5.4 / DR-05: delete archive data with business date before the archive cut-off, layout MD-07 <container>/<yyyy>/<BlobPath>/<BlobPath>_<yyyyMMdd>.parquet: level YEAR on the container root, then level FILE in the cut-off year. A missing folder is a no-op.",
                 "activities": [
                     {
                         "name": "EXEC_Level_Year",
@@ -3429,25 +3531,18 @@
                                     "value": "@pipeline().parameters.ArchiveContainer",
                                     "type": "Expression"
                                 },
-                                "FolderPath": {
-                                    "value": "@pipeline().parameters.BlobPath",
-                                    "type": "Expression"
-                                },
+                                "FolderPath": "",
                                 "Level": "YEAR",
                                 "CutoffYear": {
                                     "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4))",
                                     "type": "Expression"
-                                },
-                                "CutoffMonth": {
-                                    "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 5, 2))",
-                                    "type": "Expression"
                                 }
                             }
                         },
-                        "description": "Year folders before the cut-off year are deleted whole."
+                        "description": "Container root: folders <yyyy>/<BlobPath> of years before the archive cut-off year are deleted whole."
                     },
                     {
-                        "name": "EXEC_Level_Month",
+                        "name": "EXEC_Level_File",
                         "type": "ExecutePipeline",
                         "dependsOn": [
                             {
@@ -3474,65 +3569,17 @@
                                     "type": "Expression"
                                 },
                                 "FolderPath": {
-                                    "value": "@concat(pipeline().parameters.BlobPath, '/year=', substring(pipeline().parameters.ArchiveCutoffDate, 0, 4))",
+                                    "value": "@concat(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4), '/', pipeline().parameters.BlobPath)",
                                     "type": "Expression"
                                 },
-                                "Level": "MONTH",
+                                "Level": "FILE",
                                 "CutoffYear": {
                                     "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4))",
-                                    "type": "Expression"
-                                },
-                                "CutoffMonth": {
-                                    "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 5, 2))",
                                     "type": "Expression"
                                 }
                             }
                         },
-                        "description": "Inside the cut-off year: month folders before the cut-off month."
-                    },
-                    {
-                        "name": "EXEC_Level_Day",
-                        "type": "ExecutePipeline",
-                        "dependsOn": [
-                            {
-                                "activity": "EXEC_Level_Month",
-                                "dependencyConditions": [
-                                    "Completed"
-                                ]
-                            }
-                        ],
-                        "userProperties": [],
-                        "typeProperties": {
-                            "pipeline": {
-                                "referenceName": "PL_RET_04A_ArchiveExpiry_Level",
-                                "type": "PipelineReference"
-                            },
-                            "waitOnCompletion": true,
-                            "parameters": {
-                                "TableLogId": {
-                                    "value": "@pipeline().parameters.TableLogId",
-                                    "type": "Expression"
-                                },
-                                "ArchiveContainer": {
-                                    "value": "@pipeline().parameters.ArchiveContainer",
-                                    "type": "Expression"
-                                },
-                                "FolderPath": {
-                                    "value": "@concat(pipeline().parameters.BlobPath, '/year=', substring(pipeline().parameters.ArchiveCutoffDate, 0, 4), '/month=', substring(pipeline().parameters.ArchiveCutoffDate, 5, 2))",
-                                    "type": "Expression"
-                                },
-                                "Level": "DAY",
-                                "CutoffYear": {
-                                    "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4))",
-                                    "type": "Expression"
-                                },
-                                "CutoffMonth": {
-                                    "value": "@int(substring(pipeline().parameters.ArchiveCutoffDate, 5, 2))",
-                                    "type": "Expression"
-                                }
-                            }
-                        },
-                        "description": "Inside the cut-off month: day folders before the cut-off day."
+                        "description": "Folder <archive cut-off year>/<BlobPath>: files dated before the archive cut-off are deleted."
                     }
                 ],
                 "parameters": {
@@ -3554,7 +3601,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -3708,7 +3756,7 @@
                             ],
                             "ifFalseActivities": []
                         },
-                        "description": "A VALIDATION run (process type kept in SQL for manual dry validation) stops after the checks of usp_BeginTable."
+                        "description": "Dry validation (PL_RET_01 with ValidateOnly = true, process type VALIDATION, decision D-3) stops after the checks of usp_BeginTable; nothing is exported or deleted."
                     },
                     {
                         "name": "IF_ArchiveExpiry",
@@ -3898,7 +3946,8 @@
                     "name": "DWH Retention/Internal"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ]
             },
@@ -3913,7 +3962,7 @@
             "type": "Microsoft.DataFactory/factories/pipelines",
             "apiVersion": "2018-06-01",
             "properties": {
-                "description": "PL-01 / PRC-02 / FR-011: Initial Cut-off Run, triggered manually inside 21:00-05:00 UTC+7 (BR-17). TableConfigIdList EMPTY = automatic mode (CR-01, SQL v0.5): all active tables not yet COMPLETED, SMALL/MEDIUM before LARGE, child tables first; run again until every table is COMPLETED. TableConfigIdList given = explicit ordered list. LARGE or TABLE_REBUILD tables require DowntimeReference (BR-16, D-07). Concurrency 1.",
+                "description": "PL-01 / PRC-02 / FR-011: Initial Cut-off Run, triggered manually inside 21:00-05:00 UTC+7 (BR-17). TableConfigIdList EMPTY = automatic mode (CR-01, SQL v0.5): all active tables not yet COMPLETED, SMALL/MEDIUM before LARGE, child tables first; run again until every table is COMPLETED. TableConfigIdList given = explicit ordered list. LARGE or TABLE_REBUILD tables require DowntimeReference (BR-16, D-07). Concurrency 1. ValidateOnly = true: dry validation (process type VALIDATION, decision D-3, FSD 4.2 / 4.11): checks V-01..V-11 only, nothing exported or deleted, DowntimeReference ignored; empty TableConfigIdList = all active tables not COMPLETED.",
                 "activities": [
                     {
                         "name": "LKP_StartRun",
@@ -3931,7 +3980,7 @@
                             "source": {
                                 "type": "SqlServerSource",
                                 "sqlReaderQuery": {
-                                    "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''INITIAL_CUTOFF'', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', if(empty(trim(pipeline().parameters.DowntimeReference)), 'NULL', concat('N''', replace(trim(pipeline().parameters.DowntimeReference), '''', ''''''), '''')), ';')",
+                                    "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''', if(bool(pipeline().parameters.ValidateOnly), 'VALIDATION', 'INITIAL_CUTOFF'), ''', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', if(bool(pipeline().parameters.ValidateOnly), 'NULL', if(empty(trim(pipeline().parameters.DowntimeReference)), 'NULL', concat('N''', replace(trim(pipeline().parameters.DowntimeReference), '''', ''''''), ''''))), ';')",
                                     "type": "Expression"
                                 },
                                 "queryTimeout": "00:30:00",
@@ -3966,11 +4015,32 @@
                         }
                     },
                     {
+                        "name": "SET_ProcessType",
+                        "type": "SetVariable",
+                        "dependsOn": [
+                            {
+                                "activity": "SET_RunId",
+                                "dependencyConditions": [
+                                    "Succeeded"
+                                ]
+                            }
+                        ],
+                        "userProperties": [],
+                        "typeProperties": {
+                            "variableName": "vProcessType",
+                            "value": {
+                                "value": "@activity('LKP_StartRun').output.firstRow.ProcessType",
+                                "type": "Expression"
+                            }
+                        },
+                        "description": "Process type as recorded by usp_StartRun (VALIDATION when ValidateOnly = true)."
+                    },
+                    {
                         "name": "LKP_GetTablesToProcess",
                         "type": "Lookup",
                         "dependsOn": [
                             {
-                                "activity": "SET_RunId",
+                                "activity": "SET_ProcessType",
                                 "dependencyConditions": [
                                     "Succeeded"
                                 ]
@@ -4055,7 +4125,10 @@
                                                 "value": "@string(item().TableConfigId)",
                                                 "type": "Expression"
                                             },
-                                            "ProcessType": "INITIAL_CUTOFF",
+                                            "ProcessType": {
+                                                "value": "@variables('vProcessType')",
+                                                "type": "Expression"
+                                            },
                                             "InitialCutoffMethod": {
                                                 "value": "@item().InitialCutoffMethod",
                                                 "type": "Expression"
@@ -4182,10 +4255,18 @@
                     "TriggeredBy": {
                         "type": "string",
                         "defaultValue": ""
+                    },
+                    "ValidateOnly": {
+                        "type": "bool",
+                        "defaultValue": false
                     }
                 },
                 "variables": {
                     "vRunId": {
+                        "type": "String",
+                        "defaultValue": ""
+                    },
+                    "vProcessType": {
                         "type": "String",
                         "defaultValue": ""
                     }
@@ -4194,7 +4275,8 @@
                     "name": "DWH Retention"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ],
                 "concurrency": 1
@@ -4227,7 +4309,7 @@
                             "source": {
                                 "type": "SqlServerSource",
                                 "sqlReaderQuery": {
-                                    "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''DAILY_ROUTINE'', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', 'NULL', ';')",
+                                    "value": "@concat('EXEC ret.usp_StartRun @ProcessType = ''', 'DAILY_ROUTINE', ''', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(pipeline().parameters.RunDate)), 'NULL', concat('''', formatDateTime(if(empty(trim(pipeline().parameters.RunDate)), '1900-01-01', trim(pipeline().parameters.RunDate)), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(pipeline().parameters.TriggeredBy)), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), trim(pipeline().parameters.TriggeredBy)), '''', ''''''), ''''), ', @DowntimeReference = ', 'NULL', ';')",
                                     "type": "Expression"
                                 },
                                 "queryTimeout": "00:30:00",
@@ -4262,11 +4344,32 @@
                         }
                     },
                     {
+                        "name": "SET_ProcessType",
+                        "type": "SetVariable",
+                        "dependsOn": [
+                            {
+                                "activity": "SET_RunId",
+                                "dependencyConditions": [
+                                    "Succeeded"
+                                ]
+                            }
+                        ],
+                        "userProperties": [],
+                        "typeProperties": {
+                            "variableName": "vProcessType",
+                            "value": {
+                                "value": "@activity('LKP_StartRun').output.firstRow.ProcessType",
+                                "type": "Expression"
+                            }
+                        },
+                        "description": "Process type as recorded by usp_StartRun (VALIDATION when ValidateOnly = true)."
+                    },
+                    {
                         "name": "LKP_GetTablesToProcess",
                         "type": "Lookup",
                         "dependsOn": [
                             {
-                                "activity": "SET_RunId",
+                                "activity": "SET_ProcessType",
                                 "dependencyConditions": [
                                     "Succeeded"
                                 ]
@@ -4344,7 +4447,10 @@
                                                 "value": "@string(item().TableConfigId)",
                                                 "type": "Expression"
                                             },
-                                            "ProcessType": "DAILY_ROUTINE",
+                                            "ProcessType": {
+                                                "value": "@variables('vProcessType')",
+                                                "type": "Expression"
+                                            },
                                             "InitialCutoffMethod": {
                                                 "value": "@item().InitialCutoffMethod",
                                                 "type": "Expression"
@@ -4469,13 +4575,18 @@
                     "vRunId": {
                         "type": "String",
                         "defaultValue": ""
+                    },
+                    "vProcessType": {
+                        "type": "String",
+                        "defaultValue": ""
                     }
                 },
                 "folder": {
                     "name": "DWH Retention"
                 },
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ],
                 "concurrency": 1
@@ -4492,7 +4603,8 @@
             "properties": {
                 "description": "BR-18: Daily Routine every day at 21:00 UTC+7 (SE Asia Standard Time). Deployed STOPPED: start it only after ret.usp_ActivateDailyRoutine (FSD 16.2, FR-020).",
                 "annotations": [
-                    "FSD-DWH-RET-001 v0.2",
+                    "FSD-DWH-RET v1.1",
+                    "SQL v0.6",
                     "DRAFT - not approved"
                 ],
                 "runtimeState": "Stopped",

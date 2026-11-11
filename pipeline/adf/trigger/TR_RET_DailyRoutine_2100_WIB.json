@@ -3,7 +3,8 @@
     "properties": {
         "description": "BR-18: Daily Routine every day at 21:00 UTC+7 (SE Asia Standard Time). Deployed STOPPED: start it only after ret.usp_ActivateDailyRoutine (FSD 16.2, FR-020).",
         "annotations": [
-            "FSD-DWH-RET-001 v0.2",
+            "FSD-DWH-RET v1.1",
+            "SQL v0.6",
             "DRAFT - not approved"
         ],
         "runtimeState": "Stopped",

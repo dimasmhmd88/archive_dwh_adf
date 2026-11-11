@@ -12,7 +12,7 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "out"
 FOLDER = "DWH Retention"
 FOLDER_RUN = "DWH Retention"
 FOLDER_INT = "DWH Retention/Internal"
-ANN = ["FSD-DWH-RET-001 v0.2", "DRAFT - not approved"]
+ANN = ["FSD-DWH-RET v1.1", "SQL v0.6", "DRAFT - not approved"]
 
 LS_SQL, LS_BLOB = "LS_RET_AzureSqlDb", "LS_RET_ArchiveBlob"
 DS_SQL, DS_PARQ, DS_FOLDER = "DS_RET_SqlDb", "DS_RET_ArchiveParquet", "DS_RET_ArchiveFolder"
@@ -203,47 +203,55 @@ def pass_ctx(*names, **extra):
     d.update(extra)
     return d
 
-# ------------------------------------------------------------------ PL-03F file cleanup (FR-018)
+# ------------------------------------------------------------------ PL-03F file cleanup (FSD 4.18, 6.1)
 def pl03f():
-    wildcard = f"concat({P('SchemaName')}, '_', {P('TableName')}, '_*_', {P('RunId')}, '.parquet')"
-    log_ok = lookup_sp("LKP_LogCleanup_Succeeded", "ret.usp_LogCleanupResult",
-                       dict(TableLogId=("Int64", f"@{P('TableLogId')}"), Status=("String", "SUCCEEDED")),
-                       deps=[dep("DEL_RunFiles")], pol=POL_LOG)
-    log_fail = lookup_sp("LKP_LogCleanup_DeleteFailed", "ret.usp_LogCleanupResult",
-                         dict(TableLogId=("Int64", f"@{P('TableLogId')}"), Status=("String", "FAILED"),
-                              ErrorMessage=("String", "@activity('DEL_RunFiles').error.message")),
-                         deps=[dep("DEL_RunFiles", "Failed")], pol=POL_LOG)
-    delete = {"name": "DEL_RunFiles", "type": "Delete", "dependsOn": [],
-              "policy": policy("0.01:00:00", 2, 60), "userProperties": [],
-              "description": "Deletes only the files written by this RunId for this table: "
-                             "<schema>_<table>_*_<RunId>.parquet under <BlobPath> (all date folders).",
-              "typeProperties": {"dataset": folder_ds(P("ArchiveContainer"), P("BlobPath")),
+    lst = "LKP_GetRunArchiveFiles"
+    fe = "FE_DeleteRunFiles"
+    gmd = "GMD_RunFileFolderExists"
+    tl = ("Int64", f"@{P('TableLogId')}")
+    delete = {"name": "DEL_RunFile", "type": "Delete", "dependsOn": [],
+              "policy": policy("0.00:30:00", 2, 60), "userProperties": [],
+              "description": "Deletes exactly one file of this run: <FolderPath>/<FileName> from ret.RetentionArchiveDate "
+                             "(no pattern; files of other runs are never touched).",
+              "typeProperties": {"dataset": folder_ds(P("ArchiveContainer"), "item().FolderPath"),
                                  "enableLogging": False,
-                                 "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": True,
-                                                   "wildcardFileName": E(wildcard),
+                                 "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
+                                                   "wildcardFileName": E("item().FileName"),
                                                    "enablePartitionDiscovery": False}}}
     acts = [
-        {"name": "GMD_TableRootExists", "type": "GetMetadata", "dependsOn": [],
-         "policy": policy("0.00:30:00", 2, 60), "userProperties": [],
-         "typeProperties": {"dataset": folder_ds(P("ArchiveContainer"), P("BlobPath")),
-                            "fieldList": ["exists"],
-                            "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
-                                              "enablePartitionDiscovery": False},
-                            "formatSettings": {"type": "BinaryReadSettings"}}},
-        ifc("IF_TableRootExists", "activity('GMD_TableRootExists').output.exists",
-            [delete, log_ok, log_fail],
-            [lookup_sp("LKP_LogCleanup_NothingToRemove", "ret.usp_LogCleanupResult",
-                       dict(TableLogId=("Int64", f"@{P('TableLogId')}"), Status=("String", "SUCCEEDED"),
-                            FilesRemoved=("Int32", 0)), pol=POL_LOG)],
-            deps=[dep("GMD_TableRootExists")]),
+        lookup_sp(lst, "ret.usp_GetRunArchiveFiles", dict(TableLogId=tl), first_row=False, pol=POL_CTRL,
+                  desc="FSD 4.18: files this table log may have written (ExportStatus SUCCEEDED, FAILED or STOPPED)."),
+        {"name": fe, "type": "ForEach", "dependsOn": [dep(lst)], "userProperties": [],
+         "description": "One file per business date; a missing folder means the file was never written.",
+         "typeProperties": {
+             "items": E(f"activity('{lst}').output.value"), "isSequential": False, "batchCount": 4,
+             "activities": [
+                 {"name": gmd, "type": "GetMetadata", "dependsOn": [], "policy": policy("0.00:30:00", 2, 60),
+                  "userProperties": [],
+                  "typeProperties": {"dataset": folder_ds(P("ArchiveContainer"), "item().FolderPath"),
+                                     "fieldList": ["exists"],
+                                     "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
+                                                       "enablePartitionDiscovery": False},
+                                     "formatSettings": {"type": "BinaryReadSettings"}}},
+                 ifc("IF_RunFileFolderExists", f"activity('{gmd}').output.exists", [delete], deps=[dep(gmd)])]}},
+        lookup_sp("LKP_LogCleanup_Succeeded", "ret.usp_LogCleanupResult",
+                  dict(TableLogId=tl, Status=("String", "SUCCEEDED"),
+                       FilesRemoved=("Int32", f"@length(activity('{lst}').output.value)")),
+                  deps=[dep(fe)], pol=POL_LOG),
+        lookup_sp("LKP_LogCleanup_DeleteFailed", "ret.usp_LogCleanupResult",
+                  dict(TableLogId=tl, Status=("String", "FAILED"),
+                       ErrorMessage=("String", f"@concat('One or more archive files of this run could not be deleted (', "
+                                               f"{P('BlobPath')}, '). ADF run ', pipeline().RunId)")),
+                  deps=[dep(fe, "Failed")], pol=POL_LOG),
         lookup_sp("LKP_LogCleanup_ListFailed", "ret.usp_LogCleanupResult",
-                  dict(TableLogId=("Int64", f"@{P('TableLogId')}"), Status=("String", "FAILED"),
-                       ErrorMessage=("String", "@activity('GMD_TableRootExists').error.message")),
-                  deps=[dep("GMD_TableRootExists", "Failed")], pol=POL_LOG),
+                  dict(TableLogId=tl, Status=("String", "FAILED"),
+                       ErrorMessage=("String", f"@activity('{lst}').error.message")),
+                  deps=[dep(lst, "Failed")], pol=POL_LOG),
     ]
     return pipeline(PL03F,
-        "FR-018 / DBR-08: remove the archive files written by a failed or stopped run for one table, then record the "
-        "result with ret.usp_LogCleanupResult (success: export rows marked REMOVED; failure: orphan-file flag, ERR-EXP-03).",
+        "FSD 4.18 / 5.4 / 6.1: remove exactly the archive files that this table log wrote, as listed by "
+        "ret.usp_GetRunArchiveFiles (layout MD-07, no RunId in the file name), then record the result with "
+        "ret.usp_LogCleanupResult (success: dates marked REMOVED; failure: orphan-file flag, ERR-EXP-03).",
         {"TableLogId": sp(), "RunId": sp(), "ArchiveContainer": sp(), "BlobPath": sp(), "SchemaName": sp(), "TableName": sp()},
         {}, acts)
 
@@ -558,87 +566,102 @@ def pl03a():
          "PendingResumeTableLogId": sp("string", "")},
         {"vProcessingPath": "NONE"}, acts)
 
-# ------------------------------------------------------------------ PL-04A / PL-04 archive expiry (FR-013)
+# ------------------------------------------------------------------ PL-04A / PL-04 archive expiry (FSD 4.13, 5.4)
 def pl04a():
     gmd = "GMD_ListChildItems"
     lkp = "LKP_GetExpiredArchiveFolders"
-    flt = "FLT_FoldersToDelete"
+    flt = "FLT_ItemsToDelete"
+    fe = "FE_DeleteExpiredItems"
+    gx = "GMD_ItemFolderExists"
+    tl = ("Int64", f"@{P('TableLogId')}")
+    is_year = f"equals({P('Level')}, 'YEAR')"
+    cnt = f"activity('{flt}').output.FilteredItemsCount"
+    delete = {"name": "DEL_ExpiredItem", "type": "Delete", "dependsOn": [],
+              "policy": policy("0.01:00:00", 2, 60), "userProperties": [],
+              "description": "YEAR: whole folder <yyyy>/<BlobPath> (recursive). FILE: one file <BlobPath>_<yyyyMMdd>.parquet.",
+              "typeProperties": {"dataset": folder_ds(P("ArchiveContainer"), "item().FolderPath"),
+                                 "enableLogging": False,
+                                 "storeSettings": {"type": "AzureBlobStorageReadSettings",
+                                                   "recursive": E(is_year),
+                                                   "wildcardFileName": E("if(empty(item().FileName), '*', item().FileName)"),
+                                                   "enablePartitionDiscovery": False}}}
     acts = [
         {"name": gmd, "type": "GetMetadata", "dependsOn": [], "policy": policy("0.00:30:00", 2, 60),
          "userProperties": [],
-         "description": "Child items of one folder level; 'exists' keeps a missing folder from failing the activity.",
+         "description": "YEAR: container root (year folders). FILE: folder <cut-off year>/<BlobPath>. "
+                        "'exists' keeps a missing folder from failing the activity.",
          "typeProperties": {"dataset": folder_ds(P("ArchiveContainer"), P("FolderPath")),
                             "fieldList": ["exists", "childItems"],
                             "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
                                               "enablePartitionDiscovery": False},
                             "formatSettings": {"type": "BinaryReadSettings"}}},
         lookup_sp(lkp, "ret.usp_GetExpiredArchiveFolders",
-                  dict(TableLogId=("Int64", f"@{P('TableLogId')}"),
+                  dict(TableLogId=tl,
                        ChildItemsJson=("String", f"@string(coalesce(activity('{gmd}').output?.childItems, json('[]')))"),
                        Level=("String", f"@{P('Level')}"),
-                       Year=("Int16", f"@{P('CutoffYear')}"),
-                       Month=("Int16", f"@{P('CutoffMonth')}")),
+                       Year=("Int16", f"@{P('CutoffYear')}")),
                   deps=[dep(gmd)], first_row=False, pol=POL_CTRL,
-                  desc="Pattern and date parsed in SQL (DBR-12); returns DELETE (whole folder before the archive cut-off) "
-                       "and DESCEND rows. Year/Month = archive cut-off year/month (used only at MONTH/DAY level)."),
+                  desc="Names and dates parsed in SQL; returns DELETE rows only (YEAR: <yyyy>/<BlobPath> before the cut-off "
+                       "year; FILE: files dated before the archive cut-off). Non-matching names are never deleted."),
         {"name": flt, "type": "Filter", "dependsOn": [dep(lkp)], "userProperties": [],
          "typeProperties": {"items": E(f"activity('{lkp}').output.value"),
                             "condition": E("equals(item().Action, 'DELETE')")}},
-        {"name": "FE_DeleteExpiredFolders", "type": "ForEach", "dependsOn": [dep(flt)], "userProperties": [],
+        {"name": fe, "type": "ForEach", "dependsOn": [dep(flt)], "userProperties": [],
+         "description": "Parallel, batch 4 (FSD 6.1). The year folder is shared by all tables, so the table folder may not exist.",
          "typeProperties": {
              "items": E(f"activity('{flt}').output.value"), "isSequential": False, "batchCount": 4,
              "activities": [
-                 {"name": "DEL_ExpiredFolder", "type": "Delete", "dependsOn": [],
-                  "policy": policy("0.01:00:00", 2, 60), "userProperties": [],
+                 {"name": gx, "type": "GetMetadata", "dependsOn": [], "policy": policy("0.00:30:00", 2, 60),
+                  "userProperties": [],
                   "typeProperties": {"dataset": folder_ds(P("ArchiveContainer"), "item().FolderPath"),
-                                     "enableLogging": False,
-                                     "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": True,
-                                                       "enablePartitionDiscovery": False}}}]}},
+                                     "fieldList": ["exists"],
+                                     "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
+                                                       "enablePartitionDiscovery": False},
+                                     "formatSettings": {"type": "BinaryReadSettings"}}},
+                 ifc("IF_ItemFolderExists", f"activity('{gx}').output.exists", [delete], deps=[dep(gx)])]}},
         lookup_sp("LKP_LogExpired_Succeeded", "ret.usp_LogExpiredArchiveResult",
-                  dict(TableLogId=("Int64", f"@{P('TableLogId')}"), Status=("String", "SUCCEEDED"),
-                       FoldersDeleted=("Int32", f"@activity('{flt}').output.FilteredItemsCount")),
-                  deps=[dep("FE_DeleteExpiredFolders")], pol=POL_LOG),
+                  dict(TableLogId=tl, Status=("String", "SUCCEEDED"),
+                       FoldersDeleted=("Int32", f"@if({is_year}, {cnt}, 0)"),
+                       FilesDeleted=("Int32", f"@if({is_year}, 0, {cnt})")),
+                  deps=[dep(fe)], pol=POL_LOG),
         lookup_sp("LKP_LogExpired_DeleteFailed", "ret.usp_LogExpiredArchiveResult",
-                  dict(TableLogId=("Int64", f"@{P('TableLogId')}"), Status=("String", "FAILED"),
-                       ErrorMessage=("String", f"@concat('ERR-ARC-01: one or more expired folders could not be deleted at level ', "
-                                               f"{P('Level')}, ' of ', {P('FolderPath')}, '. ADF run ', pipeline().RunId)")),
-                  deps=[dep("FE_DeleteExpiredFolders", "Failed")], pol=POL_LOG),
+                  dict(TableLogId=tl, Status=("String", "FAILED"),
+                       ErrorMessage=("String", f"@concat('ERR-ARC-01: one or more expired items could not be deleted at level ', "
+                                               f"{P('Level')}, ' of ', if(empty({P('FolderPath')}), '<container root>', {P('FolderPath')}), "
+                                               f"'. ADF run ', pipeline().RunId)")),
+                  deps=[dep(fe, "Failed")], pol=POL_LOG),
         lookup_sp("LKP_LogExpired_ListFailed", "ret.usp_LogExpiredArchiveResult",
-                  dict(TableLogId=("Int64", f"@{P('TableLogId')}"), Status=("String", "FAILED"),
+                  dict(TableLogId=tl, Status=("String", "FAILED"),
                        ErrorMessage=("String", f"@activity('{gmd}').error.message")),
                   deps=[dep(gmd, "Failed")], pol=POL_LOG),
         lookup_sp("LKP_LogExpired_ProcFailed", "ret.usp_LogExpiredArchiveResult",
-                  dict(TableLogId=("Int64", f"@{P('TableLogId')}"), Status=("String", "FAILED"),
+                  dict(TableLogId=tl, Status=("String", "FAILED"),
                        ErrorMessage=("String", f"@activity('{lkp}').error.message")),
                   deps=[dep(lkp, "Failed")], pol=POL_LOG),
     ]
     return pipeline(PL04A,
-        "PRC-04 one folder level (YEAR, MONTH or DAY): list child folders, let ret.usp_GetExpiredArchiveFolders decide, "
-        "delete whole expired folders recursively, record the result (ERR-ARC-01 on failure; idempotent, next run completes).",
-        {"TableLogId": sp(), "ArchiveContainer": sp(), "FolderPath": sp(), "Level": sp(),
-         "CutoffYear": sp("int"), "CutoffMonth": sp("int")},
+        "FSD 4.13 / 5.4 one level (YEAR or FILE): list the items, let ret.usp_GetExpiredArchiveFolders decide, delete the "
+        "expired year folders of this table or the expired files, record the result (ERR-ARC-01 on failure; the next "
+        "Daily Routine completes).",
+        {"TableLogId": sp(), "ArchiveContainer": sp(), "FolderPath": sp("string", ""), "Level": sp(),
+         "CutoffYear": sp("int")},
         {}, acts)
 
 def pl04():
     y = f"substring({P('ArchiveCutoffDate')}, 0, 4)"
-    m = f"substring({P('ArchiveCutoffDate')}, 5, 2)"
     common = lambda lvl, path: {"TableLogId": f"@{P('TableLogId')}", "ArchiveContainer": f"@{P('ArchiveContainer')}",
-                                "FolderPath": path, "Level": lvl,
-                                "CutoffYear": f"@int({y})", "CutoffMonth": f"@int({m})"}
+                                "FolderPath": path, "Level": lvl, "CutoffYear": f"@int({y})"}
     acts = [
-        execp("EXEC_Level_Year", PL04A, common("YEAR", f"@{P('BlobPath')}"),
-              desc="Year folders before the cut-off year are deleted whole."),
-        execp("EXEC_Level_Month", PL04A, common("MONTH", f"@concat({P('BlobPath')}, '/year=', {y})"),
+        execp("EXEC_Level_Year", PL04A, common("YEAR", ""),
+              desc="Container root: folders <yyyy>/<BlobPath> of years before the archive cut-off year are deleted whole."),
+        execp("EXEC_Level_File", PL04A, common("FILE", f"@concat({y}, '/', {P('BlobPath')})"),
               deps=[dep("EXEC_Level_Year", "Completed")],
-              desc="Inside the cut-off year: month folders before the cut-off month."),
-        execp("EXEC_Level_Day", PL04A, common("DAY", f"@concat({P('BlobPath')}, '/year=', {y}, '/month=', {m})"),
-              deps=[dep("EXEC_Level_Month", "Completed")],
-              desc="Inside the cut-off month: day folders before the cut-off day."),
+              desc="Folder <archive cut-off year>/<BlobPath>: files dated before the archive cut-off are deleted."),
     ]
     return pipeline(PL04,
-        "PL-04 / PRC-04 / FR-013 (DR-05, BR-14): delete archive folders with business date before the archive cut-off "
-        "date, traversing year=YYYY -> month=MM -> day=DD (MD-07, Figure 7). Folder paths of the cut-off year and month "
-        "are derived from ArchiveCutoffDate; a missing folder is a no-op.",
+        "FSD 4.13 / 5.4 / DR-05: delete archive data with business date before the archive cut-off, layout MD-07 "
+        "<container>/<yyyy>/<BlobPath>/<BlobPath>_<yyyyMMdd>.parquet: level YEAR on the container root, then level FILE "
+        "in the cut-off year. A missing folder is a no-op.",
         {"TableLogId": sp(), "ArchiveContainer": sp(), "BlobPath": sp(), "ArchiveCutoffDate": sp()},
         {}, acts)
 
@@ -666,7 +689,8 @@ def pl03():
              setvar("SET_ErrDataSteps", "vErrDataSteps", "@activity('EXEC_DataSteps').error.message",
                     deps=[dep("EXEC_DataSteps", "Failed")])],
             deps=[dep("LKP_BeginTable")],
-            desc="A VALIDATION run (process type kept in SQL for manual dry validation) stops after the checks of usp_BeginTable."),
+            desc="Dry validation (PL_RET_01 with ValidateOnly = true, process type VALIDATION, decision D-3) stops after "
+                 "the checks of usp_BeginTable; nothing is exported or deleted."),
         ifc("IF_ArchiveExpiry",
             f"and(equals({P('ProcessType')}, 'DAILY_ROUTINE'), bool({bt}.CanRunArchiveExpiry))",
             [execp("EXEC_ArchiveExpiry", PL04, {
@@ -697,7 +721,7 @@ def pl03():
         {"vErrDataSteps": "", "vErrArchiveExpiry": ""}, acts)
 
 # ------------------------------------------------------------------ masters
-def master(name, process_type, desc, params, with_list, with_downtime):
+def master(name, process_type, desc, params, with_list, with_downtime, with_validate=False):
     trig = "if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL')"
     rd = P("RunDate")
     run_date = (f"if(empty(trim({rd})), 'NULL', concat('''', formatDateTime(if(empty(trim({rd})), '1900-01-01', "
@@ -705,7 +729,14 @@ def master(name, process_type, desc, params, with_list, with_downtime):
     tb = (f"if(empty(trim({P('TriggeredBy')})), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), "
           f"trim({P('TriggeredBy')}))")
     downtime = sql_nstr_or_null(P("DowntimeReference")) if with_downtime else "'NULL'"
-    start_q = (f"@concat('EXEC ret.usp_StartRun @ProcessType = ''{process_type}'', @TriggerType = ''', {trig}, "
+    if with_validate:
+        # Decision D-3 (option A): dry validation through the same master pipeline
+        validate = f"bool({P('ValidateOnly')})"
+        pt_expr = f"if({validate}, 'VALIDATION', '{process_type}')"
+        downtime = f"if({validate}, 'NULL', {downtime})"
+    else:
+        pt_expr = f"'{process_type}'"
+    start_q = (f"@concat('EXEC ret.usp_StartRun @ProcessType = ''', {pt_expr}, ''', @TriggerType = ''', {trig}, "
                f"''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', {run_date}, "
                f"', @TriggeredBy = ', {sql_nstr(tb)}, ', @DowntimeReference = ', {downtime}, ';')")
     gt_params = dict(RunId=("Int64", f"@{V('vRunId')}"))
@@ -719,8 +750,10 @@ def master(name, process_type, desc, params, with_list, with_downtime):
                      desc="FR-003 / FR-014: run record, run date fixed in UTC+7 (override may only be earlier, DBR-15); "
                           "idempotent per ADF pipeline run ID. Optional values are passed as NULL when empty."),
         setvar("SET_RunId", "vRunId", f"@string({FR('LKP_StartRun')}.RunId)", deps=[dep("LKP_StartRun")]),
+        setvar("SET_ProcessType", "vProcessType", f"@{FR('LKP_StartRun')}.ProcessType", deps=[dep("SET_RunId")],
+               desc="Process type as recorded by usp_StartRun (VALIDATION when ValidateOnly = true)."),
         lookup_sp("LKP_GetTablesToProcess", "ret.usp_GetTablesToProcess", gt_params,
-                  deps=[dep("SET_RunId")], first_row=False, pol=POL_CTRL,
+                  deps=[dep("SET_ProcessType")], first_row=False, pol=POL_CTRL,
                   desc="FR-004: table selection per process type; ordered by ProcessingOrder (child tables first, DBR-19 / DBR-18)."),
         {"name": "FE_Tables", "type": "ForEach", "dependsOn": [dep("LKP_GetTablesToProcess")], "userProperties": [],
          "description": "Sequential (DEC-07). A failed table never blocks the next one.",
@@ -728,7 +761,7 @@ def master(name, process_type, desc, params, with_list, with_downtime):
              "items": E("activity('LKP_GetTablesToProcess').output.value"), "isSequential": True,
              "activities": [execp("EXEC_TableProcess", PL03, {
                  "RunId": f"@{V('vRunId')}", "TableConfigId": "@string(item().TableConfigId)",
-                 "ProcessType": process_type, "InitialCutoffMethod": "@item().InitialCutoffMethod",
+                 "ProcessType": f"@{V('vProcessType')}", "InitialCutoffMethod": "@item().InitialCutoffMethod",
                  "ArchiveContainer": "@item().ArchiveContainer", "BlobPath": "@item().BlobPath",
                  "SchemaName": "@item().SchemaName", "TableName": "@item().TableName"})]}},
         lookup_sp("LKP_EndRun", "ret.usp_EndRun",
@@ -738,16 +771,19 @@ def master(name, process_type, desc, params, with_list, with_downtime):
         lookup_query("LKP_EndRun_SelectionFailed", endrun_err_q,
                      deps=[dep("LKP_GetTablesToProcess", "Failed")], pol=POL_ENDRUN),
     ]
-    return pipeline(name, desc, params, {"vRunId": ""}, acts, concurrency=1, folder=FOLDER_RUN)
+    return pipeline(name, desc, params, {"vRunId": "", "vProcessType": ""}, acts, concurrency=1, folder=FOLDER_RUN)
 
 def pl01():
     return master(PL01, "INITIAL_CUTOFF",
         "PL-01 / PRC-02 / FR-011: Initial Cut-off Run, triggered manually inside 21:00-05:00 UTC+7 (BR-17). "
         "TableConfigIdList EMPTY = automatic mode (CR-01, SQL v0.5): all active tables not yet COMPLETED, SMALL/MEDIUM "
         "before LARGE, child tables first; run again until every table is COMPLETED. TableConfigIdList given = explicit "
-        "ordered list. LARGE or TABLE_REBUILD tables require DowntimeReference (BR-16, D-07). Concurrency 1.",
+        "ordered list. LARGE or TABLE_REBUILD tables require DowntimeReference (BR-16, D-07). Concurrency 1. "
+        "ValidateOnly = true: dry validation (process type VALIDATION, decision D-3, FSD 4.2 / 4.11): checks V-01..V-11 "
+        "only, nothing exported or deleted, DowntimeReference ignored; empty TableConfigIdList = all active tables not "
+        "COMPLETED.",
         {"TableConfigIdList": sp("string", ""), "RunDate": sp("string", ""), "DowntimeReference": sp("string", ""),
-         "TriggeredBy": sp("string", "")}, True, True)
+         "TriggeredBy": sp("string", ""), "ValidateOnly": sp("bool", False)}, True, True, with_validate=True)
 
 def pl02():
     return master(PL02, "DAILY_ROUTINE",

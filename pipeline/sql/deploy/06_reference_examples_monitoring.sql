@@ -1,6 +1,6 @@
 /* =====================================================================================
-   DWH Data Retention and Archiving - schema ret - 05_reference_examples_monitoring.sql
-   Part of DWH_Retention_DB_Objects_v0.5.sql (DRAFT - not reviewed, not executed against any database).
+   DWH Data Retention and Archiving - schema ret - 06_reference_examples_monitoring.sql
+   Part of DWH_Retention_DB_Objects_v0.6.sql (DRAFT - not reviewed, not executed against any database).
    COMMENTED OUT: example configuration, example calls, monitoring queries (sections 10-12)
    Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
    ===================================================================================== */
@@ -24,7 +24,7 @@ INSERT INTO ret.RetentionConfig
      BlobPath, InitialCutoffMethod, IsActive, SizeCategory)
 VALUES
     (N'BOS', N'JTI_SD_BrandDistDetail', N'dtmDate', NULL, 3, 5,
-     N'bos/jti_sd_branddistdetail', 'BATCH_DELETE', 1, 'SMALL');            -- method and size TBD
+     N'bos.jti_sd_branddistdetail', 'BATCH_DELETE', 1, 'LARGE');            -- method TBD (rebuild candidate)
 
 -- Header table and child table without its own date column (FR-023, MD-05)
 DECLARE @HeaderId INT, @ChildId INT;
@@ -33,14 +33,14 @@ INSERT INTO ret.RetentionConfig
     (SchemaName, TableName, RetentionColumn, ParentTableConfigId, DwhRetentionYears, BlobRetentionYears,
      BlobPath, InitialCutoffMethod, IsActive, SizeCategory)
 VALUES
-    (N'<schema>', N'<HeaderTable>', N'<dateColumn>', NULL, 3, 5, N'<schema>/<headertable>', 'BATCH_DELETE', 1, 'MEDIUM');
+    (N'<schema>', N'<HeaderTable>', N'<dateColumn>', NULL, 3, 5, N'<schema>.<headertable>', 'BATCH_DELETE', 1, 'MEDIUM');
 SET @HeaderId = SCOPE_IDENTITY();
 
 INSERT INTO ret.RetentionConfig
     (SchemaName, TableName, RetentionColumn, ParentTableConfigId, DwhRetentionYears, BlobRetentionYears,
      BlobPath, InitialCutoffMethod, IsActive, SizeCategory)
 VALUES
-    (N'<schema>', N'<ChildTable>', NULL, @HeaderId, 3, 5, N'<schema>/<childtable>', 'BATCH_DELETE', 1, 'MEDIUM');
+    (N'<schema>', N'<ChildTable>', NULL, @HeaderId, 3, 5, N'<schema>.<childtable>', 'BATCH_DELETE', 1, 'MEDIUM');
 SET @ChildId = SCOPE_IDENTITY();
 
 INSERT INTO ret.RetentionParentKey (TableConfigId, KeyOrdinal, ChildColumn, ParentColumn)
@@ -56,7 +56,7 @@ VALUES (@ChildId, 1, N'<childKeyColumn1>', N'<headerKeyColumn1>'),
    =====================================================================================
 -- Dry validation (V-01..V-11, no data change)
 EXEC ret.usp_StartRun @ProcessType = 'VALIDATION', @TriggerType = 'MANUAL', @TriggeredBy = N'<operator>';
-EXEC ret.usp_GetTablesToProcess @RunId = <RunId>, @TableConfigIdList = N'1,2';
+EXEC ret.usp_GetTablesToProcess @RunId = <RunId>, @TableConfigIdList = N'1,2';   -- or NULL: all active tables not COMPLETED (v0.6)
 EXEC ret.usp_BeginTable @RunId = <RunId>, @TableConfigId = 1;
 EXEC ret.usp_EndTable @TableLogId = <TableLogId>;
 EXEC ret.usp_EndRun @RunId = <RunId>, @FailPipelineOnError = 0;
@@ -68,9 +68,10 @@ EXEC ret.usp_StartRun @ProcessType = 'INITIAL_CUTOFF', @TriggerType = 'MANUAL', 
 --   on failure before the swap commits: usp_TableRebuildAbort -> file cleanup -> usp_LogCleanupResult -> usp_EndTable
 
 -- Archive expiry (DR-05), level by level
-EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'YEAR',  @ChildItemsJson = N'[{"name":"year=2017","type":"Folder"},{"name":"year=2018","type":"Folder"}]';
-EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'MONTH', @Year = 2018, @ChildItemsJson = N'[{"name":"month=09","type":"Folder"},{"name":"month=10","type":"Folder"}]';
-EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'DAY',   @Year = 2018, @Month = 10, @ChildItemsJson = N'[{"name":"day=26","type":"Folder"},{"name":"day=27","type":"Folder"}]';
+EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'YEAR', @ChildItemsJson = N'[{"name":"2017","type":"Folder"},{"name":"2018","type":"Folder"}]';
+EXEC ret.usp_GetExpiredArchiveFolders @TableLogId = <TableLogId>, @Level = 'FILE', @Year = 2018, @ChildItemsJson = N'[{"name":"bos.jti_sd_branddistdetail_20181026.parquet","type":"File"},{"name":"bos.jti_sd_branddistdetail_20181027.parquet","type":"File"}]';
+-- Files written by one table log (cleanup after a failure)
+EXEC ret.usp_GetRunArchiveFiles @TableLogId = <TableLogId>;
 
 -- Activation of the Daily Routine after all Initial Cut-off Runs completed (AC-15)
 EXEC ret.usp_ActivateDailyRoutine @Confirm = 1;
