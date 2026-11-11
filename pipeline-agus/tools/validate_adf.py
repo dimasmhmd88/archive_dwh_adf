@@ -353,6 +353,13 @@ for tn, t in TR.items():
     for pr in t["properties"]["pipelines"]:
         if pr["pipelineReference"]["referenceName"] not in PL: err(f"{tn}: pipeline not found")
 
+# ------------------------------------------------------------------ system variables (ADF documentation)
+SYSVARS = {"DataFactory", "Pipeline", "RunId", "TriggerType", "TriggerId", "TriggerName", "TriggerTime", "GroupId",
+           "TriggeredByPipelineName", "TriggeredByPipelineRunId", "parameters", "globalParameters"}
+for pn, p in PL.items():
+    for m in re.finditer(r"pipeline\(\)\.(\w+)", json.dumps(p)):
+        if m.group(1) not in SYSVARS: err(f"{pn}: unsupported system variable pipeline().{m.group(1)}")
+
 # ------------------------------------------------------------------ ARM checks
 arm = json.load(open(os.path.join(ROOT, "arm", "ARMTemplateForFactory.json")))
 names = {r["name"].split("'/")[1].rstrip("')]") if "'/" in r["name"] else r["name"] for r in arm["resources"]}
@@ -377,7 +384,7 @@ print("ARM resources:", {k: kinds.count(k) for k in set(kinds)})
 # ------------------------------------------------------------------ scenario evaluation of dynamic T-SQL
 def ctxm(params, variables=None, acts=None, trig="Manual"):
     return {"pipeline": {"parameters": params, "RunId": "6f1c2b9e-0000-4000-8000-000000000001",
-                         "TriggerType": trig, "TriggeredByName": "Sandbox"},
+                         "TriggerType": trig, "TriggerName": "Sandbox"},
             "variables": variables or {}, "activities": acts or {}, "item": None}
 
 def act_expr(pl, actname, path):
