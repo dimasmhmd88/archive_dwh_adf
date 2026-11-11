@@ -732,7 +732,7 @@ def master(name, process_type, desc, params, with_list, with_downtime, with_vali
     rd = P("RunDate")
     run_date = (f"if(empty(trim({rd})), 'NULL', concat('''', formatDateTime(if(empty(trim({rd})), '1900-01-01', "
                 f"trim({rd})), 'yyyy-MM-dd'), ''''))")
-    tb = (f"if(empty(trim({P('TriggeredBy')})), concat(pipeline().TriggerType, ': ', pipeline().TriggeredByName), "
+    tb = (f"if(empty(trim({P('TriggeredBy')})), concat(pipeline().TriggerType, ': ', pipeline().TriggerName), "
           f"trim({P('TriggeredBy')}))")
     downtime = sql_nstr_or_null(P("DowntimeReference")) if with_downtime else "'NULL'"
     if with_validate:
