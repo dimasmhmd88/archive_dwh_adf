@@ -35,6 +35,7 @@
 | `deploy/05_monitoring_views.sql` | 6 monitoring views | 5 |
 | `deploy/06_reference_examples_monitoring.sql` | Examples and queries, all commented out | No (reference) |
 | `deploy/07_security_roles_TEMPLATE.sql` | Roles and GRANTs, commented out, with placeholders | After DBA review |
+| `config/00_insert_default_config.sql` | **v0.1:** explicit defaults of all configuration tables: `RetentionParameter` (batch 10,000 / 3 s, window 21:00–05:00, NULL-check FULL, container `dwh-archive`; optional reset), 30 error codes, missing `RetentionTableStatus` rows | Before `10_…` |
 | `config/10_insert_retention_config.sql` | **v0.2:** the 31 phase-1 tables of FSD App. A.1, BlobPath `schema.table`, ArchiveContainer `dwh-archive`; all other rows set inactive | After step 3 below |
 
 The v0.5 files (`DWH_Retention_DB_Objects_v0.5.sql`, `…_v0.5_patch.sql`) are replaced by v0.6 and remain in the Git history. v0.6 can be run over a v0.5 / v0.5.1 database: the migration blocks and `CREATE OR ALTER` update it.
