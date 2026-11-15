@@ -121,7 +121,7 @@
             "type": "Microsoft.DataFactory/factories/datasets",
             "apiVersion": "2018-06-01",
             "properties": {
-                "description": "One Parquet file per table and business date: <container>/<BlobPath>/year=YYYY/month=MM/day=DD/<schema>_<table>_<yyyyMMdd>_<RunId>.parquet (FR-007, MD-07, DEC-04).",
+                "description": "One Parquet file per table and business date: <container>/<yyyy>/<BlobPath>/<BlobPath>_<yyyyMMdd>.parquet, BlobPath = lower-case <schema>.<table>; FolderPath and FileName come from ret.RetentionArchiveDate (SQL v0.6 ret.fn_ArchiveFolderPath / ret.fn_ArchiveFileName) (FR-007, MD-07).",
                 "linkedServiceName": {
                     "referenceName": "LS_RET_ArchiveBlob",
                     "type": "LinkedServiceReference"
@@ -883,7 +883,7 @@
                                                     "secureInput": false
                                                 },
                                                 "userProperties": [],
-                                                "description": "IC-02 / DR-02: rows of one business date -> one Parquet file. Source ret.usp_ExportSourceRows (all columns, ordinal order, no transformation). File name carries the RunId (DBR-07).",
+                                                "description": "IC-02 / DR-02: rows of one business date -> one Parquet file. Source ret.usp_ExportSourceRows (all columns, ordinal order, no transformation). File name <BlobPath>_<yyyyMMdd>.parquet without RunId (MD-07).",
                                                 "inputs": [
                                                     {
                                                         "referenceName": "DS_RET_SqlDb",

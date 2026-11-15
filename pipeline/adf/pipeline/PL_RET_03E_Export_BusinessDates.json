@@ -300,7 +300,7 @@
                                             "secureInput": false
                                         },
                                         "userProperties": [],
-                                        "description": "IC-02 / DR-02: rows of one business date -> one Parquet file. Source ret.usp_ExportSourceRows (all columns, ordinal order, no transformation). File name carries the RunId (DBR-07).",
+                                        "description": "IC-02 / DR-02: rows of one business date -> one Parquet file. Source ret.usp_ExportSourceRows (all columns, ordinal order, no transformation). File name <BlobPath>_<yyyyMMdd>.parquet without RunId (MD-07).",
                                         "inputs": [
                                             {
                                                 "referenceName": "DS_RET_SqlDb",

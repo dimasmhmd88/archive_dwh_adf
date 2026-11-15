@@ -168,8 +168,9 @@ def datasets():
             "annotations": ANN, "folder": {"name": FOLDER},
             "type": "SqlServerTable", "schema": [], "typeProperties": {}}},
         {"name": DS_PARQ, "properties": {
-            "description": "One Parquet file per table and business date: <container>/<BlobPath>/year=YYYY/month=MM/day=DD/"
-                           "<schema>_<table>_<yyyyMMdd>_<RunId>.parquet (FR-007, MD-07, DEC-04).",
+            "description": "One Parquet file per table and business date: <container>/<yyyy>/<BlobPath>/<BlobPath>_<yyyyMMdd>.parquet, "
+                           "BlobPath = lower-case <schema>.<table>; FolderPath and FileName come from ret.RetentionArchiveDate "
+                           "(SQL v0.6 ret.fn_ArchiveFolderPath / ret.fn_ArchiveFileName) (FR-007, MD-07).",
             "linkedServiceName": {"referenceName": LS_BLOB, "type": "LinkedServiceReference"},
             "parameters": {"Container": {"type": "string"}, "FolderPath": {"type": "string"}, "FileName": {"type": "string"}},
             "annotations": ANN, "folder": {"name": FOLDER},
@@ -274,7 +275,7 @@ def pl03e():
         "name": cpy, "type": "Copy", "dependsOn": [dep("SET_ExportStartTime")],
         "policy": policy("0.04:00:00", 2, 120), "userProperties": [],
         "description": "IC-02 / DR-02: rows of one business date -> one Parquet file. Source ret.usp_ExportSourceRows "
-                       "(all columns, ordinal order, no transformation). File name carries the RunId (DBR-07).",
+                       "(all columns, ordinal order, no transformation). File name <BlobPath>_<yyyyMMdd>.parquet without RunId (MD-07).",
         "inputs": [{"referenceName": DS_SQL, "type": "DatasetReference"}],
         "outputs": [{"referenceName": DS_PARQ, "type": "DatasetReference",
                      "parameters": {"Container": E(P("ArchiveContainer")),
