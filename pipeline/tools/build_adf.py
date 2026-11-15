@@ -114,8 +114,13 @@ def sql_nstr(expr):
     """T-SQL N'...' literal of a (non-null) ADF string expression, quotes doubled."""
     return f"concat('N''', replace({expr}, '''', ''''''), '''')"
 
+def nz(expr):
+    """Null-safe string: trim() fails on a null parameter value (empty value in Debug / Trigger now)."""
+    return f"coalesce({expr}, '')"
+
 def sql_nstr_or_null(expr):
-    return f"if(empty(trim({expr})), 'NULL', {sql_nstr(f'trim({expr})')})"
+    e = nz(expr)
+    return f"if(empty(trim({e})), 'NULL', {sql_nstr(f'trim({e})')})"
 
 # Lookup policies (FSD 13.4: ADF retry for transient errors, values TBD; rebuild: no automatic retry)
 POL_CTRL  = policy("0.00:30:00", 1, 60)
@@ -723,11 +728,11 @@ def pl03():
 # ------------------------------------------------------------------ masters
 def master(name, process_type, desc, params, with_list, with_downtime, with_validate=False):
     trig = "if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL')"
-    rd = P("RunDate")
+    rd = nz(P("RunDate"))
     run_date = (f"if(empty(trim({rd})), 'NULL', concat('''', formatDateTime(if(empty(trim({rd})), '1900-01-01', "
                 f"trim({rd})), 'yyyy-MM-dd'), ''''))")
-    tb = (f"if(empty(trim({P('TriggeredBy')})), concat(pipeline().TriggerType, ': ', pipeline().TriggerName), "
-          f"trim({P('TriggeredBy')}))")
+    tb = (f"if(empty(trim({nz(P('TriggeredBy'))})), concat(pipeline().TriggerType, ': ', pipeline().TriggerName), "
+          f"trim({nz(P('TriggeredBy'))}))")
     downtime = sql_nstr_or_null(P("DowntimeReference")) if with_downtime else "'NULL'"
     if with_validate:
         # Decision D-3 (option A): dry validation through the same master pipeline

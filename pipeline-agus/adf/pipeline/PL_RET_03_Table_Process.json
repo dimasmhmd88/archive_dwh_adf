@@ -241,7 +241,7 @@
                     "source": {
                         "type": "SqlServerSource",
                         "sqlReaderQuery": {
-                            "value": "@concat('EXEC ret.usp_EndTable @TableLogId = ', string(activity('LKP_BeginTable').output.firstRow.TableLogId), ', @ErrorMessage = ', if(empty(trim(concat(variables('vErrDataSteps'), if(and(not(empty(variables('vErrDataSteps'))), not(empty(variables('vErrArchiveExpiry')))), ' | ', ''), variables('vErrArchiveExpiry')))), 'NULL', concat('N''', replace(trim(concat(variables('vErrDataSteps'), if(and(not(empty(variables('vErrDataSteps'))), not(empty(variables('vErrArchiveExpiry')))), ' | ', ''), variables('vErrArchiveExpiry'))), '''', ''''''), '''')), ';')",
+                            "value": "@concat('EXEC ret.usp_EndTable @TableLogId = ', string(activity('LKP_BeginTable').output.firstRow.TableLogId), ', @ErrorMessage = ', if(empty(trim(coalesce(concat(variables('vErrDataSteps'), if(and(not(empty(variables('vErrDataSteps'))), not(empty(variables('vErrArchiveExpiry')))), ' | ', ''), variables('vErrArchiveExpiry')), ''))), 'NULL', concat('N''', replace(trim(coalesce(concat(variables('vErrDataSteps'), if(and(not(empty(variables('vErrDataSteps'))), not(empty(variables('vErrArchiveExpiry')))), ' | ', ''), variables('vErrArchiveExpiry')), '')), '''', ''''''), '''')), ';')",
                             "type": "Expression"
                         },
                         "queryTimeout": "00:30:00",
