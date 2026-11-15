@@ -37,6 +37,7 @@
 | `deploy/07_security_roles_TEMPLATE.sql` | Roles and GRANTs, commented out, with placeholders | After DBA review |
 | `test/90_verify_v06_deployment.sql` | Read-only check that v0.6 is fully deployed (object counts, archive layout functions, v0.6 procedures used by ADF v0.3, BlobPath, old-layout inventory rows). Every row must show OK | After deploy/05 |
 | `test/91_reset_table_for_retest.sql` | **DEV/TEST only.** Resets one table (`@TableConfigId`) after a test Initial Cut-off: lists the Blob files to delete, marks the archive inventory REMOVED (avoids ERR-EXP-02) and sets the status back to PENDING | Only for re-tests |
+| `test/92_insert_test_table_config.sql` | **DEV/TEST.** Registers test tables (e.g. copies `<table>_Retention`) in `ret.RetentionConfig` after the V-01..V-04 / V-06 checks; size category from used space; preview with `@Apply = 0` | For tests |
 | `config/00_insert_default_config.sql` | **v0.1:** explicit defaults of all configuration tables: `RetentionParameter` (batch 10,000 / 3 s, window 21:00–05:00, NULL-check FULL, container `dwh-archive`; optional reset), 30 error codes, missing `RetentionTableStatus` rows | Before `10_…` |
 | `config/10_insert_retention_config.sql` | **v0.2:** the 31 phase-1 tables of FSD App. A.1, BlobPath `schema.table`, ArchiveContainer `dwh-archive`; all other rows set inactive | After step 3 below |
 
