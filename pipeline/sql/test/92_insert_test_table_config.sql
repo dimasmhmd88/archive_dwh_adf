@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - register TEST tables in ret.RetentionConfig
    -------------------------------------------------------------------------------------
-   Script  : test/92_insert_test_table_config.sql   Version 0.1 (DRAFT)      15 November 2026
+   Script  : test/92_insert_test_table_config.sql   Version 0.2 (DRAFT)      16 November 2026
    Requires: schema ret v0.6 (test/90_verify_v06_deployment.sql all OK)
    Use     : DEV / TEST databases. For production tables use config/10_insert_retention_config.sql.
 
@@ -68,7 +68,12 @@ FROM @Test AS t
 LEFT JOIN sys.tables AS o ON o.object_id = OBJECT_ID(QUOTENAME(t.SchemaName) + N'.' + QUOTENAME(t.TableName))
 LEFT JOIN sys.columns AS c ON c.object_id = o.object_id AND c.name = t.RetentionColumn
 LEFT JOIN sys.types AS ty ON ty.user_type_id = c.user_type_id
-OUTER APPLY (SELECT ISNULL(SUM(ps.used_page_count), 0) AS UsedPages FROM sys.dm_db_partition_stats AS ps WHERE ps.object_id = o.object_id) AS sz;
+-- Catalog views instead of sys.dm_db_partition_stats: no VIEW DATABASE PERFORMANCE STATE permission needed
+OUTER APPLY (SELECT ISNULL(SUM(CONVERT(BIGINT, au.used_pages)), 0) AS UsedPages
+             FROM sys.partitions AS p
+             JOIN sys.allocation_units AS au
+               ON au.container_id = CASE WHEN au.type IN (1, 3) THEN p.hobt_id ELSE p.partition_id END
+             WHERE p.object_id = o.object_id) AS sz;
 
 UPDATE k
    SET ExistingConfigId = rc.TableConfigId,
