@@ -1,0 +1,340 @@
+{
+    "name": "PL_RETB_03C_Path_BatchDelete",
+    "properties": {
+        "description": "PRC-02 batch-delete path (IC-01..IC-04a) and PRC-03 (DR-02..DR-04), option B: export (chunks) -> validate + batch delete + post-check in one Lookup; this run's files are removed when validation fails (FR-018).",
+        "activities": [
+            {
+                "name": "IF_ExportRequired",
+                "type": "IfCondition",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(pipeline().parameters.NextAction, 'EXPORT')",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_ExportChunks",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RETB_03E_Export_Chunks",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "TableLogId": {
+                                        "value": "@pipeline().parameters.TableLogId",
+                                        "type": "Expression"
+                                    },
+                                    "ProcessType": {
+                                        "value": "@pipeline().parameters.ProcessType",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@pipeline().parameters.SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@pipeline().parameters.TableName",
+                                        "type": "Expression"
+                                    },
+                                    "CleanupOnStop": true
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "NextAction VALIDATE (IC, expired rows only, DBR-03) skips the export."
+            },
+            {
+                "name": "LKP_ValidateDeleteAndCheck",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "IF_ExportRequired",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:30:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_ValidateDeleteAndCheck",
+                        "storedProcedureParameters": {
+                            "RunId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.RunId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "12:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "Option B, one Lookup: usp_ValidateArchive (BR-08 gate) -> usp_BatchDelete only when PASSED -> usp_PostCheck only when COMPLETED. Always called after the export step (a failed export makes the validation FAIL, so nothing is removed). Retry 0: the deletion is never repeated by ADF."
+            },
+            {
+                "name": "IF_CleanupRequired",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_ValidateDeleteAndCheck",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@bool(activity('LKP_ValidateDeleteAndCheck').output.firstRow.CleanupRequired)",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_FileCleanup",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RETB_03F_Table_FileCleanup",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "TableLogId": {
+                                        "value": "@pipeline().parameters.TableLogId",
+                                        "type": "Expression"
+                                    },
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@pipeline().parameters.SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@pipeline().parameters.TableName",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "E3: validation failure or ERR-VAL-02 -> remove this run's files; nothing removed from the DWH."
+            },
+            {
+                "name": "LKP_GetCleanupDecision",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_ValidateDeleteAndCheck",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_GetCleanupDecision",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "Unexpected error: files may be removed only while no row was deleted (fail-safe, BR-08)."
+            },
+            {
+                "name": "IF_CleanupOnError",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_GetCleanupDecision",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@bool(activity('LKP_GetCleanupDecision').output.firstRow.CleanupRequired)",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_FileCleanup_OnError",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RETB_03F_Table_FileCleanup",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "TableLogId": {
+                                        "value": "@pipeline().parameters.TableLogId",
+                                        "type": "Expression"
+                                    },
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@pipeline().parameters.SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@pipeline().parameters.TableName",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                }
+            },
+            {
+                "name": "FAIL_ValidateDeleteError",
+                "type": "Fail",
+                "dependsOn": [
+                    {
+                        "activity": "IF_CleanupOnError",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "message": {
+                        "value": "@concat('ret.usp_ValidateDeleteAndCheck failed for TableLogId ', pipeline().parameters.TableLogId, ': ', activity('LKP_ValidateDeleteAndCheck').error.message)",
+                        "type": "Expression"
+                    },
+                    "errorCode": "RET-VALIDATE-DELETE-ERROR"
+                }
+            }
+        ],
+        "parameters": {
+            "RunId": {
+                "type": "string"
+            },
+            "TableLogId": {
+                "type": "string"
+            },
+            "ProcessType": {
+                "type": "string"
+            },
+            "NextAction": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "BlobPath": {
+                "type": "string"
+            },
+            "SchemaName": {
+                "type": "string"
+            },
+            "TableName": {
+                "type": "string"
+            }
+        },
+        "variables": {},
+        "folder": {
+            "name": "DWH Retention Opsi B/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET v1.1",
+            "SQL v0.7-opsiB",
+            "ADF opsi B v0.1",
+            "DRAFT - not approved"
+        ]
+    }
+}

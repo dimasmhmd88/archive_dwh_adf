@@ -1,0 +1,325 @@
+{
+    "name": "PL_RETB_03E_Export_Chunks",
+    "properties": {
+        "description": "Option B (FR-006 / FR-007 / FR-019, IC-02, DR-02, RB-06): export every PENDING business date of a table log, chunk by chunk; each chunk of N dates is exported in parallel by PL_RETB_03G (N = ExportParallelism).",
+        "activities": [
+            {
+                "name": "UNT_ExportChunks",
+                "type": "Until",
+                "dependsOn": [],
+                "userProperties": [],
+                "description": "One iteration per chunk of N dates. ret.usp_GetExportChunk decides (status, failed dates, IC window) and returns the next N PENDING dates; the loop ends after the chunk with RemainingAfterChunk = 0, or when ContinueExport = 0, or on an error.",
+                "typeProperties": {
+                    "expression": {
+                        "value": "@not(equals(variables('vContinue'), '1'))",
+                        "type": "Expression"
+                    },
+                    "timeout": "1.00:00:00",
+                    "activities": [
+                        {
+                            "name": "LKP_GetExportChunk",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.00:30:00",
+                                "retry": 1,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_GetExportChunk",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": false
+                            }
+                        },
+                        {
+                            "name": "SET_Continue_FromChunk",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_GetExportChunk",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vContinue",
+                                "value": {
+                                    "value": "@if(and(bool(activity('LKP_GetExportChunk').output.value[0].ContinueExport), greater(activity('LKP_GetExportChunk').output.value[0].RemainingAfterChunk, 0)), '1', '0')",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "SET_Cleanup_FromChunk",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "SET_Continue_FromChunk",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vCleanup",
+                                "value": {
+                                    "value": "@if(bool(activity('LKP_GetExportChunk').output.value[0].CleanupRequired), '1', '0')",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "IF_ExportChunk",
+                            "type": "IfCondition",
+                            "dependsOn": [
+                                {
+                                    "activity": "SET_Cleanup_FromChunk",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "expression": {
+                                    "value": "@bool(activity('LKP_GetExportChunk').output.value[0].ContinueExport)",
+                                    "type": "Expression"
+                                },
+                                "ifTrueActivities": [
+                                    {
+                                        "name": "EXEC_ExportChunk",
+                                        "type": "ExecutePipeline",
+                                        "dependsOn": [],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "pipeline": {
+                                                "referenceName": "PL_RETB_03G_Export_Chunk",
+                                                "type": "PipelineReference"
+                                            },
+                                            "waitOnCompletion": true,
+                                            "parameters": {
+                                                "TableLogId": {
+                                                    "value": "@pipeline().parameters.TableLogId",
+                                                    "type": "Expression"
+                                                },
+                                                "ArchiveContainer": {
+                                                    "value": "@pipeline().parameters.ArchiveContainer",
+                                                    "type": "Expression"
+                                                },
+                                                "Items": {
+                                                    "value": "@activity('LKP_GetExportChunk').output.value",
+                                                    "type": "Expression"
+                                                }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "SET_Continue_ChunkError",
+                                        "type": "SetVariable",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "EXEC_ExportChunk",
+                                                "dependencyConditions": [
+                                                    "Failed"
+                                                ]
+                                            }
+                                        ],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vContinue",
+                                            "value": "0"
+                                        },
+                                        "description": "A date of the chunk failed (Copy or log): stop; this run's files are removed."
+                                    },
+                                    {
+                                        "name": "SET_Cleanup_ChunkError",
+                                        "type": "SetVariable",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "SET_Continue_ChunkError",
+                                                "dependencyConditions": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        ],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "variableName": "vCleanup",
+                                            "value": "1"
+                                        }
+                                    }
+                                ],
+                                "ifFalseActivities": []
+                            }
+                        },
+                        {
+                            "name": "SET_Continue_LookupError",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "LKP_GetExportChunk",
+                                    "dependencyConditions": [
+                                        "Failed"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vContinue",
+                                "value": "0"
+                            }
+                        },
+                        {
+                            "name": "SET_Cleanup_LookupError",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "SET_Continue_LookupError",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vCleanup",
+                                "value": "1"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "IF_CleanupOnStop",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "UNT_ExportChunks",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@and(pipeline().parameters.CleanupOnStop, equals(variables('vCleanup'), '1'))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "EXEC_FileCleanup",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RETB_03F_Table_FileCleanup",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "TableLogId": {
+                                        "value": "@pipeline().parameters.TableLogId",
+                                        "type": "Expression"
+                                    },
+                                    "RunId": {
+                                        "value": "@pipeline().parameters.RunId",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@pipeline().parameters.BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@pipeline().parameters.SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@pipeline().parameters.TableName",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": []
+                },
+                "description": "Batch-delete path: remove this run's files on export failure or window stop (E2). Rebuild path passes CleanupOnStop = false: usp_TableRebuildAbort runs first (SQL contract)."
+            }
+        ],
+        "parameters": {
+            "RunId": {
+                "type": "string"
+            },
+            "TableLogId": {
+                "type": "string"
+            },
+            "ProcessType": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "BlobPath": {
+                "type": "string"
+            },
+            "SchemaName": {
+                "type": "string"
+            },
+            "TableName": {
+                "type": "string"
+            },
+            "CleanupOnStop": {
+                "type": "bool",
+                "defaultValue": true
+            }
+        },
+        "variables": {
+            "vContinue": {
+                "type": "String",
+                "defaultValue": "1"
+            },
+            "vCleanup": {
+                "type": "String",
+                "defaultValue": "0"
+            }
+        },
+        "folder": {
+            "name": "DWH Retention Opsi B/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET v1.1",
+            "SQL v0.7-opsiB",
+            "ADF opsi B v0.1",
+            "DRAFT - not approved"
+        ]
+    }
+}

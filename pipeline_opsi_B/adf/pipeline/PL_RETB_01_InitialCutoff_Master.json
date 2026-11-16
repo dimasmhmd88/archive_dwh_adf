@@ -1,0 +1,261 @@
+{
+    "name": "PL_RETB_01_InitialCutoff_Master",
+    "properties": {
+        "description": "PL-01 / PRC-02 / FR-011: Initial Cut-off Run, triggered manually inside 21:00-05:00 UTC+7 (BR-17). TableConfigIdList EMPTY = automatic mode (CR-01, SQL v0.5): all active tables not yet COMPLETED, SMALL/MEDIUM before LARGE, child tables first; run again until every table is COMPLETED. TableConfigIdList given = explicit ordered list. LARGE or TABLE_REBUILD tables require DowntimeReference (BR-16, D-07). Concurrency 1. ValidateOnly = true: dry validation (process type VALIDATION, decision D-3, FSD 4.2 / 4.11): checks V-01..V-11 only, nothing exported or deleted, DowntimeReference ignored; empty TableConfigIdList = all active tables not COMPLETED.",
+        "activities": [
+            {
+                "name": "LKP_StartRunAndGetTables",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderQuery": {
+                            "value": "@concat('EXEC ret.usp_StartRunAndGetTables @ProcessType = ''', if(bool(pipeline().parameters.ValidateOnly), 'VALIDATION', 'INITIAL_CUTOFF'), ''', @TriggerType = ''', if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL'), ''', @AdfPipelineRunId = ''', pipeline().RunId, ''', @RunDate = ', if(empty(trim(coalesce(pipeline().parameters.RunDate, ''))), 'NULL', concat('''', formatDateTime(if(empty(trim(coalesce(pipeline().parameters.RunDate, ''))), '1900-01-01', trim(coalesce(pipeline().parameters.RunDate, ''))), 'yyyy-MM-dd'), '''')), ', @TriggeredBy = ', concat('N''', replace(if(empty(trim(coalesce(pipeline().parameters.TriggeredBy, ''))), concat(pipeline().TriggerType, ': ', pipeline().TriggerName), trim(coalesce(pipeline().parameters.TriggeredBy, ''))), '''', ''''''), ''''), ', @DowntimeReference = ', if(bool(pipeline().parameters.ValidateOnly), 'NULL', if(empty(trim(coalesce(pipeline().parameters.DowntimeReference, ''))), 'NULL', concat('N''', replace(trim(coalesce(pipeline().parameters.DowntimeReference, '')), '''', ''''''), ''''))), ', @TableConfigIdList = ', if(empty(trim(coalesce(pipeline().parameters.TableConfigIdList, ''))), 'NULL', concat('N''', replace(trim(coalesce(pipeline().parameters.TableConfigIdList, '')), '''', ''''''), '''')), ';')",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                },
+                "description": "Option B, one Lookup: usp_StartRun (run record, run date UTC+7, idempotent per ADF run ID) + usp_GetTablesToProcess (FR-004). One row per table; one row with TableConfigId NULL when none. A selection error closes the run (FAILED) in SQL and fails this activity."
+            },
+            {
+                "name": "SET_RunId",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_StartRunAndGetTables",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "vRunId",
+                    "value": {
+                        "value": "@string(activity('LKP_StartRunAndGetTables').output.value[0].RunId)",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "SET_ProcessType",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "SET_RunId",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "vProcessType",
+                    "value": {
+                        "value": "@activity('LKP_StartRunAndGetTables').output.value[0].ProcessType",
+                        "type": "Expression"
+                    }
+                },
+                "description": "Process type as recorded by usp_StartRun (VALIDATION when ValidateOnly = true)."
+            },
+            {
+                "name": "FLT_Tables",
+                "type": "Filter",
+                "dependsOn": [
+                    {
+                        "activity": "SET_ProcessType",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('LKP_StartRunAndGetTables').output.value",
+                        "type": "Expression"
+                    },
+                    "condition": {
+                        "value": "@greater(coalesce(item().TableConfigId, 0), 0)",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "FE_Tables",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "FLT_Tables",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "description": "Sequential (DEC-07). A failed table never blocks the next one.",
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('FLT_Tables').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "EXEC_TableProcess",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_RETB_03_Table_Process",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "RunId": {
+                                        "value": "@variables('vRunId')",
+                                        "type": "Expression"
+                                    },
+                                    "TableConfigId": {
+                                        "value": "@string(item().TableConfigId)",
+                                        "type": "Expression"
+                                    },
+                                    "ProcessType": {
+                                        "value": "@variables('vProcessType')",
+                                        "type": "Expression"
+                                    },
+                                    "InitialCutoffMethod": {
+                                        "value": "@item().InitialCutoffMethod",
+                                        "type": "Expression"
+                                    },
+                                    "ArchiveContainer": {
+                                        "value": "@item().ArchiveContainer",
+                                        "type": "Expression"
+                                    },
+                                    "BlobPath": {
+                                        "value": "@item().BlobPath",
+                                        "type": "Expression"
+                                    },
+                                    "SchemaName": {
+                                        "value": "@item().SchemaName",
+                                        "type": "Expression"
+                                    },
+                                    "TableName": {
+                                        "value": "@item().TableName",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "LKP_EndRun",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "FE_Tables",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_EndRun",
+                        "storedProcedureParameters": {
+                            "RunId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@variables('vRunId')",
+                                    "type": "Expression"
+                                }
+                            },
+                            "FailPipelineOnError": {
+                                "type": "Boolean",
+                                "value": true
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                },
+                "description": "FR-014: closes the run; raises an error (pipeline FAILED) when the run is not SUCCEEDED [REC 8.3]."
+            }
+        ],
+        "parameters": {
+            "TableConfigIdList": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "RunDate": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "DowntimeReference": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "TriggeredBy": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "ValidateOnly": {
+                "type": "bool",
+                "defaultValue": false
+            }
+        },
+        "variables": {
+            "vRunId": {
+                "type": "String",
+                "defaultValue": ""
+            },
+            "vProcessType": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "folder": {
+            "name": "DWH Retention Opsi B"
+        },
+        "annotations": [
+            "FSD-DWH-RET v1.1",
+            "SQL v0.7-opsiB",
+            "ADF opsi B v0.1",
+            "DRAFT - not approved"
+        ],
+        "concurrency": 1
+    }
+}
