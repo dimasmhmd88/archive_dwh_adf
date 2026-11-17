@@ -1,0 +1,638 @@
+{
+    "name": "PL_RETB_04_ArchiveExpiry",
+    "properties": {
+        "description": "FSD 4.13 / 5.4 / DR-05, option B: delete archive data with business date before the archive cut-off (layout MD-07): year folders <yyyy>/<BlobPath> before the cut-off year and files of the cut-off year dated before the cut-off, decided by one Lookup (ret.usp_GetExpiredArchiveItems). A missing folder is a no-op.",
+        "activities": [
+            {
+                "name": "GMD_ListYearFolders",
+                "type": "GetMetadata",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "description": "Container root: year folders <yyyy>.",
+                "typeProperties": {
+                    "dataset": {
+                        "referenceName": "DS_RET_ArchiveFolder",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "Container": {
+                                "value": "@pipeline().parameters.ArchiveContainer",
+                                "type": "Expression"
+                            },
+                            "FolderPath": {
+                                "value": "@''",
+                                "type": "Expression"
+                            }
+                        }
+                    },
+                    "fieldList": [
+                        "exists",
+                        "childItems"
+                    ],
+                    "storeSettings": {
+                        "type": "AzureBlobStorageReadSettings",
+                        "recursive": false,
+                        "enablePartitionDiscovery": false
+                    },
+                    "formatSettings": {
+                        "type": "BinaryReadSettings"
+                    }
+                }
+            },
+            {
+                "name": "GMD_ListCutoffYearFiles",
+                "type": "GetMetadata",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "description": "Folder <archive cut-off year>/<BlobPath>; a missing folder returns exists = false.",
+                "typeProperties": {
+                    "dataset": {
+                        "referenceName": "DS_RET_ArchiveFolder",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "Container": {
+                                "value": "@pipeline().parameters.ArchiveContainer",
+                                "type": "Expression"
+                            },
+                            "FolderPath": {
+                                "value": "@concat(substring(pipeline().parameters.ArchiveCutoffDate, 0, 4), '/', pipeline().parameters.BlobPath)",
+                                "type": "Expression"
+                            }
+                        }
+                    },
+                    "fieldList": [
+                        "exists",
+                        "childItems"
+                    ],
+                    "storeSettings": {
+                        "type": "AzureBlobStorageReadSettings",
+                        "recursive": false,
+                        "enablePartitionDiscovery": false
+                    },
+                    "formatSettings": {
+                        "type": "BinaryReadSettings"
+                    }
+                }
+            },
+            {
+                "name": "LKP_GetExpiredArchiveItems",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "GMD_ListYearFolders",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "GMD_ListCutoffYearFiles",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_GetExpiredArchiveItems",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "RootItemsJson": {
+                                "type": "String",
+                                "value": {
+                                    "value": "@string(coalesce(activity('GMD_ListYearFolders').output?.childItems, json('[]')))",
+                                    "type": "Expression"
+                                }
+                            },
+                            "FileItemsJson": {
+                                "type": "String",
+                                "value": {
+                                    "value": "@string(coalesce(activity('GMD_ListCutoffYearFiles').output?.childItems, json('[]')))",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                },
+                "description": "Option B: both levels in one Lookup (usp_GetExpiredArchiveFolders YEAR + FILE). DELETE rows only; non-matching names are never deleted."
+            },
+            {
+                "name": "FLT_YearItems",
+                "type": "Filter",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_GetExpiredArchiveItems",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('LKP_GetExpiredArchiveItems').output.value",
+                        "type": "Expression"
+                    },
+                    "condition": {
+                        "value": "@equals(item().Level, 'YEAR')",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "FLT_FileItems",
+                "type": "Filter",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_GetExpiredArchiveItems",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('LKP_GetExpiredArchiveItems').output.value",
+                        "type": "Expression"
+                    },
+                    "condition": {
+                        "value": "@equals(item().Level, 'FILE')",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "FE_DeleteExpiredItems",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_GetExpiredArchiveItems",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "description": "Parallel, batch 4 (FSD 6.1). The year folder is shared by all tables, so the table folder may not exist.",
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('LKP_GetExpiredArchiveItems').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": false,
+                    "batchCount": 4,
+                    "activities": [
+                        {
+                            "name": "GMD_ItemFolderExists",
+                            "type": "GetMetadata",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.00:30:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "dataset": {
+                                    "referenceName": "DS_RET_ArchiveFolder",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "Container": {
+                                            "value": "@pipeline().parameters.ArchiveContainer",
+                                            "type": "Expression"
+                                        },
+                                        "FolderPath": {
+                                            "value": "@item().FolderPath",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                },
+                                "fieldList": [
+                                    "exists"
+                                ],
+                                "storeSettings": {
+                                    "type": "AzureBlobStorageReadSettings",
+                                    "recursive": false,
+                                    "enablePartitionDiscovery": false
+                                },
+                                "formatSettings": {
+                                    "type": "BinaryReadSettings"
+                                }
+                            }
+                        },
+                        {
+                            "name": "IF_ItemFolderExists",
+                            "type": "IfCondition",
+                            "dependsOn": [
+                                {
+                                    "activity": "GMD_ItemFolderExists",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "expression": {
+                                    "value": "@activity('GMD_ItemFolderExists').output.exists",
+                                    "type": "Expression"
+                                },
+                                "ifTrueActivities": [
+                                    {
+                                        "name": "DEL_ExpiredItem",
+                                        "type": "Delete",
+                                        "dependsOn": [],
+                                        "policy": {
+                                            "timeout": "0.01:00:00",
+                                            "retry": 2,
+                                            "retryIntervalInSeconds": 60,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "userProperties": [],
+                                        "description": "YEAR: whole folder <yyyy>/<BlobPath> (recursive). FILE: one file <BlobPath>_<yyyyMMdd>.parquet.",
+                                        "typeProperties": {
+                                            "dataset": {
+                                                "referenceName": "DS_RET_ArchiveFolder",
+                                                "type": "DatasetReference",
+                                                "parameters": {
+                                                    "Container": {
+                                                        "value": "@pipeline().parameters.ArchiveContainer",
+                                                        "type": "Expression"
+                                                    },
+                                                    "FolderPath": {
+                                                        "value": "@item().FolderPath",
+                                                        "type": "Expression"
+                                                    }
+                                                }
+                                            },
+                                            "enableLogging": false,
+                                            "storeSettings": {
+                                                "type": "AzureBlobStorageReadSettings",
+                                                "recursive": {
+                                                    "value": "@equals(item().Level, 'YEAR')",
+                                                    "type": "Expression"
+                                                },
+                                                "wildcardFileName": {
+                                                    "value": "@if(empty(item().FileName), '*', item().FileName)",
+                                                    "type": "Expression"
+                                                },
+                                                "enablePartitionDiscovery": false
+                                            }
+                                        }
+                                    }
+                                ],
+                                "ifFalseActivities": []
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "LKP_LogExpired_Succeeded",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "FE_DeleteExpiredItems",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "FLT_YearItems",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "FLT_FileItems",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_LogExpiredArchiveResult",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "Status": {
+                                "type": "String",
+                                "value": "SUCCEEDED"
+                            },
+                            "FoldersDeleted": {
+                                "type": "Int32",
+                                "value": {
+                                    "value": "@activity('FLT_YearItems').output.FilteredItemsCount",
+                                    "type": "Expression"
+                                }
+                            },
+                            "FilesDeleted": {
+                                "type": "Int32",
+                                "value": {
+                                    "value": "@activity('FLT_FileItems').output.FilteredItemsCount",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            },
+            {
+                "name": "LKP_LogExpired_DeleteFailed",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "FE_DeleteExpiredItems",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_LogExpiredArchiveResult",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "Status": {
+                                "type": "String",
+                                "value": "FAILED"
+                            },
+                            "ErrorMessage": {
+                                "type": "String",
+                                "value": {
+                                    "value": "@concat('ERR-ARC-01: one or more expired items could not be deleted (', pipeline().parameters.BlobPath, '). ADF run ', pipeline().RunId)",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            },
+            {
+                "name": "LKP_LogExpired_ListYearFailed",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "GMD_ListYearFolders",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_LogExpiredArchiveResult",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "Status": {
+                                "type": "String",
+                                "value": "FAILED"
+                            },
+                            "ErrorMessage": {
+                                "type": "String",
+                                "value": {
+                                    "value": "@activity('GMD_ListYearFolders').error.message",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            },
+            {
+                "name": "LKP_LogExpired_ListFileFailed",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "GMD_ListCutoffYearFiles",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_LogExpiredArchiveResult",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "Status": {
+                                "type": "String",
+                                "value": "FAILED"
+                            },
+                            "ErrorMessage": {
+                                "type": "String",
+                                "value": {
+                                    "value": "@activity('GMD_ListCutoffYearFiles').error.message",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            },
+            {
+                "name": "LKP_LogExpired_ProcFailed",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "LKP_GetExpiredArchiveItems",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderStoredProcedureName": "ret.usp_LogExpiredArchiveResult",
+                        "storedProcedureParameters": {
+                            "TableLogId": {
+                                "type": "Int64",
+                                "value": {
+                                    "value": "@pipeline().parameters.TableLogId",
+                                    "type": "Expression"
+                                }
+                            },
+                            "Status": {
+                                "type": "String",
+                                "value": "FAILED"
+                            },
+                            "ErrorMessage": {
+                                "type": "String",
+                                "value": {
+                                    "value": "@activity('LKP_GetExpiredArchiveItems').error.message",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        "queryTimeout": "00:30:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_RET_SqlDb",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            }
+        ],
+        "parameters": {
+            "TableLogId": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "BlobPath": {
+                "type": "string"
+            },
+            "ArchiveCutoffDate": {
+                "type": "string"
+            }
+        },
+        "variables": {},
+        "folder": {
+            "name": "DWH Retention Opsi B/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET v1.1",
+            "SQL v0.7-opsiB",
+            "ADF opsi B v0.1",
+            "DRAFT - not approved"
+        ]
+    }
+}

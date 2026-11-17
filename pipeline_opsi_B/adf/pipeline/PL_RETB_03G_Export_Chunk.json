@@ -1,0 +1,271 @@
+{
+    "name": "PL_RETB_03G_Export_Chunk",
+    "properties": {
+        "description": "Option B: export one chunk of business dates (up to N) in parallel, one Parquet file per date, each result recorded with ret.usp_LogExportResult. Called by PL_RETB_03E for every chunk.",
+        "activities": [
+            {
+                "name": "FE_ExportDates",
+                "type": "ForEach",
+                "dependsOn": [],
+                "userProperties": [],
+                "description": "Option B: the dates of one chunk in parallel (batchCount 16 = upper bound; the chunk size N from ret.usp_GetExportChunk sets the real parallelism). No variables inside (not safe in a parallel ForEach): every result is recorded in SQL by ret.usp_LogExportResult.",
+                "typeProperties": {
+                    "items": {
+                        "value": "@pipeline().parameters.Items",
+                        "type": "Expression"
+                    },
+                    "isSequential": false,
+                    "batchCount": 16,
+                    "activities": [
+                        {
+                            "name": "CPY_ExportBusinessDate",
+                            "type": "Copy",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.04:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 120,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "description": "IC-02 / DR-02: rows of one business date -> one Parquet file <FolderPath>/<FileName> (MD-07). Source ret.usp_ExportSourceRows (all columns, ordinal order, no transformation).",
+                            "inputs": [
+                                {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "referenceName": "DS_RET_ArchiveParquet",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "Container": {
+                                            "value": "@pipeline().parameters.ArchiveContainer",
+                                            "type": "Expression"
+                                        },
+                                        "FolderPath": {
+                                            "value": "@item().FolderPath",
+                                            "type": "Expression"
+                                        },
+                                        "FileName": {
+                                            "value": "@item().FileName",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_ExportSourceRows",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "BusinessDate": {
+                                            "type": "String",
+                                            "value": {
+                                                "value": "@item().BusinessDate",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "04:00:00",
+                                    "partitionOption": "None"
+                                },
+                                "sink": {
+                                    "type": "ParquetSink",
+                                    "storeSettings": {
+                                        "type": "AzureBlobStorageWriteSettings"
+                                    },
+                                    "formatSettings": {
+                                        "type": "ParquetWriteSettings"
+                                    }
+                                },
+                                "enableStaging": false,
+                                "translator": {
+                                    "type": "TabularTranslator",
+                                    "typeConversion": true,
+                                    "typeConversionSettings": {
+                                        "allowDataTruncation": false,
+                                        "treatBooleanAsNumber": false
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "name": "LKP_LogExport_Succeeded",
+                            "type": "Lookup",
+                            "dependsOn": [
+                                {
+                                    "activity": "CPY_ExportBusinessDate",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.00:10:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_LogExportResult",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "BusinessDate": {
+                                            "type": "String",
+                                            "value": {
+                                                "value": "@item().BusinessDate",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "ExportStatus": {
+                                            "type": "String",
+                                            "value": "SUCCEEDED"
+                                        },
+                                        "RowsRead": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@activity('CPY_ExportBusinessDate').output.rowsRead",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "RowsWritten": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@activity('CPY_ExportBusinessDate').output.rowsCopied",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "FilesWritten": {
+                                            "type": "Int32",
+                                            "value": {
+                                                "value": "@activity('CPY_ExportBusinessDate').output.filesWritten",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "ExportStartTime": {
+                                            "type": "String",
+                                            "value": {
+                                                "value": "@convertFromUtc(addSeconds(utcNow(), mul(-1, int(activity('CPY_ExportBusinessDate').output.copyDuration))), 'SE Asia Standard Time', 'yyyy-MM-dd HH:mm:ss.fff')",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            },
+                            "description": "Records rows read / written per date (input of usp_ValidateArchive); IC: window check (ERR-WIN-01)."
+                        },
+                        {
+                            "name": "LKP_LogExport_Failed",
+                            "type": "Lookup",
+                            "dependsOn": [
+                                {
+                                    "activity": "CPY_ExportBusinessDate",
+                                    "dependencyConditions": [
+                                        "Failed"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.00:10:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderStoredProcedureName": "ret.usp_LogExportResult",
+                                    "storedProcedureParameters": {
+                                        "TableLogId": {
+                                            "type": "Int64",
+                                            "value": {
+                                                "value": "@pipeline().parameters.TableLogId",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "BusinessDate": {
+                                            "type": "String",
+                                            "value": {
+                                                "value": "@item().BusinessDate",
+                                                "type": "Expression"
+                                            }
+                                        },
+                                        "ExportStatus": {
+                                            "type": "String",
+                                            "value": "FAILED"
+                                        },
+                                        "ErrorMessage": {
+                                            "type": "String",
+                                            "value": {
+                                                "value": "@activity('CPY_ExportBusinessDate').error.message",
+                                                "type": "Expression"
+                                            }
+                                        }
+                                    },
+                                    "queryTimeout": "00:30:00",
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_RET_SqlDb",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            },
+                            "description": "ERR-EXP-01: Copy failed after retries; the chunk fails, the loop in PL_RETB_03E stops."
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "TableLogId": {
+                "type": "string"
+            },
+            "ArchiveContainer": {
+                "type": "string"
+            },
+            "Items": {
+                "type": "array"
+            }
+        },
+        "variables": {},
+        "folder": {
+            "name": "DWH Retention Opsi B/Internal"
+        },
+        "annotations": [
+            "FSD-DWH-RET v1.1",
+            "SQL v0.7-opsiB",
+            "ADF opsi B v0.1",
+            "DRAFT - not approved"
+        ]
+    }
+}

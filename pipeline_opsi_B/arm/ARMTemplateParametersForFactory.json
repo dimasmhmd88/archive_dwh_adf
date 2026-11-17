@@ -1,0 +1,12 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "factoryName": {
+            "value": "<data-factory-name>"
+        },
+        "dailyRoutineTriggerStartTime": {
+            "value": "2026-12-01T21:00:00"
+        }
+    }
+}
