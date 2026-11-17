@@ -120,8 +120,13 @@ def sql_nstr(expr):
     """T-SQL N'...' literal of a (non-null) ADF string expression, quotes doubled."""
     return f"concat('N''', replace({expr}, '''', ''''''), '''')"
 
+def nz(expr):
+    """Null-safe string: trim() fails on a null parameter value (empty value in Debug / Trigger now)."""
+    return f"coalesce({expr}, '')"
+
 def sql_nstr_or_null(expr):
-    return f"if(empty(trim({expr})), 'NULL', {sql_nstr(f'trim({expr})')})"
+    e = nz(expr)
+    return f"if(empty(trim({e})), 'NULL', {sql_nstr(f'trim({e})')})"
 
 # Lookup policies (FSD 13.4: ADF retry for transient errors, values TBD; rebuild: no automatic retry)
 POL_CTRL  = policy("0.00:30:00", 1, 60)
@@ -163,8 +168,9 @@ def datasets():
             "annotations": ANN, "folder": {"name": FOLDER},
             "type": "SqlServerTable", "schema": [], "typeProperties": {}}},
         {"name": DS_PARQ, "properties": {
-            "description": "One Parquet file per table and business date: <container>/<BlobPath>/year=YYYY/month=MM/day=DD/"
-                           "<schema>_<table>_<yyyyMMdd>_<RunId>.parquet (FR-007, MD-07, DEC-04).",
+            "description": "One Parquet file per table and business date: <container>/<yyyy>/<BlobPath>/<BlobPath>_<yyyyMMdd>.parquet, "
+                           "BlobPath = lower-case <schema>.<table>; FolderPath and FileName come from ret.RetentionArchiveDate "
+                           "(SQL v0.6 ret.fn_ArchiveFolderPath / ret.fn_ArchiveFileName) (FR-007, MD-07).",
             "linkedServiceName": {"referenceName": LS_BLOB, "type": "LinkedServiceReference"},
             "parameters": {"Container": {"type": "string"}, "FolderPath": {"type": "string"}, "FileName": {"type": "string"}},
             "annotations": ANN, "folder": {"name": FOLDER},
@@ -269,7 +275,7 @@ def pl03e():
         "name": cpy, "type": "Copy", "dependsOn": [dep("SET_ExportStartTime")],
         "policy": policy("0.04:00:00", 2, 120), "userProperties": [],
         "description": "IC-02 / DR-02: rows of one business date -> one Parquet file. Source ret.usp_ExportSourceRows "
-                       "(all columns, ordinal order, no transformation). File name carries the RunId (DBR-07).",
+                       "(all columns, ordinal order, no transformation). File name <BlobPath>_<yyyyMMdd>.parquet without RunId (MD-07).",
         "inputs": [{"referenceName": DS_SQL, "type": "DatasetReference"}],
         "outputs": [{"referenceName": DS_PARQ, "type": "DatasetReference",
                      "parameters": {"Container": E(P("ArchiveContainer")),
@@ -729,11 +735,11 @@ def pl03():
 # ------------------------------------------------------------------ masters
 def master(name, process_type, desc, params, with_list, with_downtime, with_validate=False):
     trig = "if(equals(pipeline().TriggerType, 'ScheduleTrigger'), 'SCHEDULE', 'MANUAL')"
-    rd = P("RunDate")
+    rd = nz(P("RunDate"))
     run_date = (f"if(empty(trim({rd})), 'NULL', concat('''', formatDateTime(if(empty(trim({rd})), '1900-01-01', "
                 f"trim({rd})), 'yyyy-MM-dd'), ''''))")
-    tb = (f"if(empty(trim({P('TriggeredBy')})), concat(pipeline().TriggerType, ': ', pipeline().TriggerName), "
-          f"trim({P('TriggeredBy')}))")
+    tb = (f"if(empty(trim({nz(P('TriggeredBy'))})), concat(pipeline().TriggerType, ': ', pipeline().TriggerName), "
+          f"trim({nz(P('TriggeredBy'))}))")
     downtime = sql_nstr_or_null(P("DowntimeReference")) if with_downtime else "'NULL'"
     if with_validate:
         # Decision D-3 (option A): dry validation through the same master pipeline
