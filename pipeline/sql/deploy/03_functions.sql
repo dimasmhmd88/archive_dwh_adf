@@ -93,6 +93,28 @@ BEGIN
 END;
 GO
 
+-- v0.6.1, decision D-6 (21 Nov 2026): column name written to the Parquet file. Parquet (ADF Copy) rejects
+-- white space and , ; { } ( ) = tab line-feed carriage-return in column names (ParquetInvalidColumnName).
+-- Such names get '_' for every rejected character, repeated '_' collapsed, leading/trailing '_' removed.
+-- Every other name is returned unchanged. NULL when nothing is left (caller uses column_<column_id>).
+-- Mapping source column -> archive column: view ret.vw_ParquetColumnMap.
+CREATE OR ALTER FUNCTION ret.fn_ParquetColumnName (@ColumnName NVARCHAR(128))
+RETURNS NVARCHAR(128)
+AS
+BEGIN
+    DECLARE @n NVARCHAR(128) = @ColumnName;
+    IF @n IS NULL RETURN NULL;
+    IF @n NOT LIKE N'%[ ,;{}()=]%' AND CHARINDEX(NCHAR(9), @n) = 0 AND CHARINDEX(NCHAR(10), @n) = 0
+       AND CHARINDEX(NCHAR(13), @n) = 0
+        RETURN @n;
+    SET @n = TRANSLATE(@n, N' ,;{}()=' + NCHAR(9) + NCHAR(10) + NCHAR(13), N'___________');
+    WHILE CHARINDEX(N'__', @n) > 0 SET @n = REPLACE(@n, N'__', N'_');
+    WHILE LEFT(@n, 1) = N'_' SET @n = STUFF(@n, 1, 1, N'');
+    WHILE RIGHT(@n, 1) = N'_' SET @n = LEFT(@n, LEN(@n) - 1);
+    RETURN NULLIF(@n, N'');
+END;
+GO
+
 -- Seconds -> 'hh:mm:ss' for WAITFOR DELAY
 CREATE OR ALTER FUNCTION ret.fn_DelayString (@Seconds INT)
 RETURNS CHAR(8)

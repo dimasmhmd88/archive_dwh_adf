@@ -5,7 +5,7 @@
 | Version | ADF opsi B v0.1, SQL v0.7-opsiB |
 | Status | **Draft – not reviewed, not executed in ADF or against a database** |
 | Date | 17 November 2026 |
-| Based on | `pipeline-agus/` v0.3 (linked services `Agus_SqlServer_dwh`, `Agus_AzureBlobStorage1`) and SQL v0.6 |
+| Based on | `pipeline-agus/` v0.3 (linked services `Agus_SqlServer_dwh`, `Agus_AzureBlobStorage1`) and SQL v0.6.1 (D-6 Parquet column names, 21 Nov 2026) |
 | Decision needed | Change of **DEC-07** (export one business date at a time) to "N business dates of one table exported in parallel per chunk". FSD v1.2 update. This package is the proposal; it is not approved. |
 
 The existing packages `pipeline-agus/` and `pipeline/` are **not changed**. This folder is separate.
@@ -79,7 +79,8 @@ The ADF identity needs EXECUTE on the 6 new procedures (with a schema-level `GRA
 
 ## 4. Deployment order
 
-1. Check that SQL v0.6 is complete: `pipeline/sql/test/90_verify_v06_deployment.sql` – every row OK.
+1. Check that SQL v0.6.1 is complete (`pipeline/sql/deploy/08_patch_v0.6.1_parquet_column_names.sql` on an existing v0.6 database): `pipeline/sql/test/90_verify_v06_deployment.sql` – every row OK.
+   After any later change of `pipeline/sql/deploy/04_procedures.sql`, regenerate and run `20_OpsiB_DB_Objects.sql` again.
 2. Run `sql/20_OpsiB_DB_Objects.sql` (whole file, one session).
 3. Run `sql/21_verify_opsiB.sql` – every row OK (38 procedures).
 4. ADF (Git mode, branch): create the pipelines from `adf/pipeline/*.json` **in this order** (children first): `03F`, `03G`, `03E`, `03B`, `03D`, `03C`, `04`, `03A`, `03`, `01`, `02`; then the trigger (leave it Stopped). The datasets already exist (pipeline-agus).
