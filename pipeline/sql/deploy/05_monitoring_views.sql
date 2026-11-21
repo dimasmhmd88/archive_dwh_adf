@@ -85,3 +85,16 @@ SELECT N'REBUILD_TABLE', CONVERT(SYSNAME, SCHEMA_NAME(t.schema_id)) COLLATE DATA
 FROM sys.tables AS t
 WHERE t.name COLLATE DATABASE_DEFAULT LIKE N'%[_][_]RBD[_]%';
 GO
+
+-- Parquet column names of the configured tables (v0.6.1, decision D-6): source column -> column in the archive
+-- files. IsRenamed = 1 for names that Parquet does not accept (see ret.fn_ParquetColumnName).
+CREATE OR ALTER VIEW ret.vw_ParquetColumnMap
+AS
+SELECT c.TableConfigId, c.SchemaName, c.TableName, col.column_id AS ColumnOrdinal,
+       CONVERT(NVARCHAR(128), col.name) COLLATE DATABASE_DEFAULT AS SourceColumn,
+       ISNULL(ret.fn_ParquetColumnName(col.name), CONCAT(N'column_', col.column_id)) COLLATE DATABASE_DEFAULT AS ParquetColumn,
+       CAST(CASE WHEN ret.fn_ParquetColumnName(col.name) COLLATE Latin1_General_100_BIN2
+                      = CONVERT(NVARCHAR(128), col.name) COLLATE Latin1_General_100_BIN2 THEN 0 ELSE 1 END AS BIT) AS IsRenamed
+FROM ret.RetentionConfig AS c
+JOIN sys.columns AS col ON col.object_id = OBJECT_ID(QUOTENAME(c.SchemaName) + N'.' + QUOTENAME(c.TableName));
+GO

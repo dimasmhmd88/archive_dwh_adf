@@ -894,6 +894,28 @@ BEGIN
 END;
 GO
 
+-- v0.6.1, decision D-6 (21 Nov 2026): column name written to the Parquet file. Parquet (ADF Copy) rejects
+-- white space and , ; { } ( ) = tab line-feed carriage-return in column names (ParquetInvalidColumnName).
+-- Such names get '_' for every rejected character, repeated '_' collapsed, leading/trailing '_' removed.
+-- Every other name is returned unchanged. NULL when nothing is left (caller uses column_<column_id>).
+-- Mapping source column -> archive column: view ret.vw_ParquetColumnMap.
+CREATE OR ALTER FUNCTION ret.fn_ParquetColumnName (@ColumnName NVARCHAR(128))
+RETURNS NVARCHAR(128)
+AS
+BEGIN
+    DECLARE @n NVARCHAR(128) = @ColumnName;
+    IF @n IS NULL RETURN NULL;
+    IF @n NOT LIKE N'%[ ,;{}()=]%' AND CHARINDEX(NCHAR(9), @n) = 0 AND CHARINDEX(NCHAR(10), @n) = 0
+       AND CHARINDEX(NCHAR(13), @n) = 0
+        RETURN @n;
+    SET @n = TRANSLATE(@n, N' ,;{}()=' + NCHAR(9) + NCHAR(10) + NCHAR(13), N'___________');
+    WHILE CHARINDEX(N'__', @n) > 0 SET @n = REPLACE(@n, N'__', N'_');
+    WHILE LEFT(@n, 1) = N'_' SET @n = STUFF(@n, 1, 1, N'');
+    WHILE RIGHT(@n, 1) = N'_' SET @n = LEFT(@n, LEN(@n) - 1);
+    RETURN NULLIF(@n, N'');
+END;
+GO
+
 -- Seconds -> 'hh:mm:ss' for WAITFOR DELAY
 CREATE OR ALTER FUNCTION ret.fn_DelayString (@Seconds INT)
 RETURNS CHAR(8)
@@ -1736,18 +1758,33 @@ BEGIN
         /* ---- V-08 Parquet compatibility of the exported table ---- */
         IF @ErrCode IS NULL
         BEGIN
+            -- column types that Parquet cannot hold
             SELECT @BadList = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(QUOTENAME(c.name COLLATE DATABASE_DEFAULT), N' (', t.name COLLATE DATABASE_DEFAULT, N')')) COLLATE DATABASE_DEFAULT, N', ')
             FROM sys.columns AS c
             JOIN sys.types AS t ON t.user_type_id = c.user_type_id
             WHERE c.object_id = @ObjectId
               AND (   TYPE_NAME(c.system_type_id) = 'sql_variant'
-                   OR t.is_assembly_type = 1
-                   OR c.name COLLATE DATABASE_DEFAULT LIKE N'%[ ,;{}()=]%'
-                   OR CHARINDEX(NCHAR(9), c.name COLLATE DATABASE_DEFAULT) > 0 OR CHARINDEX(NCHAR(10), c.name COLLATE DATABASE_DEFAULT) > 0 OR CHARINDEX(NCHAR(13), c.name COLLATE DATABASE_DEFAULT) > 0);
+                   OR t.is_assembly_type = 1);
 
             IF @BadList IS NOT NULL
                 SELECT @ErrCode = 'ERR-CFG-08', @CheckCode = 'V-08',
-                       @ErrMsg = LEFT(CONCAT(N'Columns not supported for Parquet export: ', @BadList), 4000);
+                       @ErrMsg = LEFT(CONCAT(N'Column types not supported for Parquet export: ', @BadList), 4000);
+            ELSE
+            BEGIN
+                -- v0.6.1, decision D-6: names with white space or , ; { } ( ) = are renamed in the Parquet file
+                -- (ret.fn_ParquetColumnName); the renamed names must stay unique (case-insensitive)
+                SELECT @BadList = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(QUOTENAME(d.ParquetColumn), N' (', d.Cnt, N' columns)')) COLLATE DATABASE_DEFAULT, N', ')
+                FROM (SELECT ISNULL(ret.fn_ParquetColumnName(c.name), CONCAT(N'column_', c.column_id)) COLLATE Latin1_General_CI_AS AS ParquetColumn,
+                             COUNT(*) AS Cnt
+                      FROM sys.columns AS c
+                      WHERE c.object_id = @ObjectId
+                      GROUP BY ISNULL(ret.fn_ParquetColumnName(c.name), CONCAT(N'column_', c.column_id)) COLLATE Latin1_General_CI_AS
+                      HAVING COUNT(*) > 1) AS d;
+
+                IF @BadList IS NOT NULL
+                    SELECT @ErrCode = 'ERR-CFG-08', @CheckCode = 'V-08',
+                           @ErrMsg = LEFT(CONCAT(N'Parquet column names not unique after renaming (D-6, ret.vw_ParquetColumnMap): ', @BadList), 4000);
+            END;
         END;
 
         /* ---- Interrupted table rebuild of an earlier run (MD-06): drop the new table, revoke the
@@ -2159,8 +2196,13 @@ BEGIN
         ;THROW 50162, @Msg, 1;
     END;
 
-    SELECT @ColList = STRING_AGG(CONVERT(NVARCHAR(MAX), N't.' + QUOTENAME(c.name COLLATE DATABASE_DEFAULT)), N', ') WITHIN GROUP (ORDER BY c.column_id)
+    -- v0.6.1, decision D-6: names that Parquet rejects get an alias (ret.fn_ParquetColumnName); values unchanged
+    SELECT @ColList = STRING_AGG(CONVERT(NVARCHAR(MAX),
+               N't.' + QUOTENAME(c.name COLLATE DATABASE_DEFAULT)
+               + CASE WHEN p.ParquetColumn COLLATE Latin1_General_100_BIN2 = CONVERT(NVARCHAR(128), c.name) COLLATE Latin1_General_100_BIN2
+                      THEN N'' ELSE N' AS ' + QUOTENAME(p.ParquetColumn) END), N', ') WITHIN GROUP (ORDER BY c.column_id)
     FROM sys.columns AS c
+    CROSS APPLY (SELECT ISNULL(ret.fn_ParquetColumnName(c.name), CONCAT(N'column_', c.column_id)) COLLATE DATABASE_DEFAULT AS ParquetColumn) AS p
     WHERE c.object_id = @ObjectId;
 
     SET @sql = N'SELECT ' + @ColList + @FromSql
@@ -4498,6 +4540,19 @@ SELECT N'REBUILD_TABLE', CONVERT(SYSNAME, SCHEMA_NAME(t.schema_id)) COLLATE DATA
        NULL, NULL, CONVERT(DATETIME2(3), DATEADD(HOUR, 7, t.create_date)), NULL
 FROM sys.tables AS t
 WHERE t.name COLLATE DATABASE_DEFAULT LIKE N'%[_][_]RBD[_]%';
+GO
+
+-- Parquet column names of the configured tables (v0.6.1, decision D-6): source column -> column in the archive
+-- files. IsRenamed = 1 for names that Parquet does not accept (see ret.fn_ParquetColumnName).
+CREATE OR ALTER VIEW ret.vw_ParquetColumnMap
+AS
+SELECT c.TableConfigId, c.SchemaName, c.TableName, col.column_id AS ColumnOrdinal,
+       CONVERT(NVARCHAR(128), col.name) COLLATE DATABASE_DEFAULT AS SourceColumn,
+       ISNULL(ret.fn_ParquetColumnName(col.name), CONCAT(N'column_', col.column_id)) COLLATE DATABASE_DEFAULT AS ParquetColumn,
+       CAST(CASE WHEN ret.fn_ParquetColumnName(col.name) COLLATE Latin1_General_100_BIN2
+                      = CONVERT(NVARCHAR(128), col.name) COLLATE Latin1_General_100_BIN2 THEN 0 ELSE 1 END AS BIT) AS IsRenamed
+FROM ret.RetentionConfig AS c
+JOIN sys.columns AS col ON col.object_id = OBJECT_ID(QUOTENAME(c.SchemaName) + N'.' + QUOTENAME(c.TableName));
 GO
 
 /* =====================================================================================

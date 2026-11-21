@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - check that schema ret v0.6 is fully deployed
    -------------------------------------------------------------------------------------
-   Script  : test/90_verify_v06_deployment.sql      Version 0.1 (DRAFT)      15 November 2026
+   Script  : test/90_verify_v06_deployment.sql      Version 0.2 (DRAFT)      21 November 2026 (v0.6.1 checks)
    Read-only. Run after deploy/01..05. Every row of the result must show OK.
 
    Background: a database with the v0.6 tables and views but the v0.5 functions and procedures
@@ -15,10 +15,10 @@ SET NOCOUNT ON;
 IF OBJECT_ID(N'tempdb..#Check') IS NOT NULL DROP TABLE #Check;
 CREATE TABLE #Check (Ord INT IDENTITY(1, 1), CheckName NVARCHAR(200), Expected NVARCHAR(400), Actual NVARCHAR(400));
 
--- 1. Object counts (v0.6: 10 tables, 32 procedures, 9 functions, 6 views, 3 triggers)
+-- 1. Object counts (v0.6.1: 10 tables, 32 procedures, 10 functions, 7 views, 3 triggers)
 INSERT INTO #Check (CheckName, Expected, Actual)
 SELECT N'Object count ' + k.Kind, CONVERT(NVARCHAR(10), k.Expected), CONVERT(NVARCHAR(10), o.Cnt)
-FROM (VALUES (N'TABLE', 10), (N'PROCEDURE', 32), (N'FUNCTION', 9), (N'VIEW', 6), (N'TRIGGER', 3)) AS k (Kind, Expected)
+FROM (VALUES (N'TABLE', 10), (N'PROCEDURE', 32), (N'FUNCTION', 10), (N'VIEW', 7), (N'TRIGGER', 3)) AS k (Kind, Expected)
 CROSS APPLY (SELECT COUNT(*) AS Cnt FROM sys.objects AS so
              WHERE so.schema_id = SCHEMA_ID(N'ret')
                AND CASE WHEN so.type = 'U' THEN N'TABLE' WHEN so.type = 'P' THEN N'PROCEDURE'
@@ -40,12 +40,21 @@ IF (SELECT COUNT(*) FROM sys.parameters WHERE object_id = OBJECT_ID(N'ret.fn_Arc
             VALUES (N''fn_ArchiveFileName(bos.jti_scw_stock, 2023-10-06)'', N''bos.jti_scw_stock_20231006.parquet'',
                     ret.fn_ArchiveFileName(N''bos.jti_scw_stock'', ''2023-10-06''));');
 
+-- 2b. v0.6.1 (decision D-6): Parquet column names
+IF OBJECT_ID(N'ret.fn_ParquetColumnName') IS NOT NULL
+    EXEC (N'INSERT INTO #Check (CheckName, Expected, Actual)
+            VALUES (N''fn_ParquetColumnName(Volume (000 STC))'', N''Volume_000_STC'', ret.fn_ParquetColumnName(N''Volume (000 STC)'')),
+                   (N''fn_ParquetColumnName(Price Per Pack)'', N''Price_Per_Pack'', ret.fn_ParquetColumnName(N''Price Per Pack'')),
+                   (N''fn_ParquetColumnName(dtmDate) unchanged'', N''dtmDate'', ret.fn_ParquetColumnName(N''dtmDate''));');
+ELSE
+    INSERT INTO #Check (CheckName, Expected, Actual) VALUES (N'Function ret.fn_ParquetColumnName (v0.6.1)', N'exists', N'missing');
+
 -- 3. Objects and columns introduced in v0.6 (called by ADF pipeline-agus v0.3 / pipeline v0.3)
 INSERT INTO #Check (CheckName, Expected, Actual)
 SELECT N'Object ' + n.Name, N'exists', CASE WHEN OBJECT_ID(n.Name) IS NULL THEN N'missing' ELSE N'exists' END
 FROM (VALUES (N'ret.usp_GetRunArchiveFiles'), (N'ret.usp_GetExpiredArchiveFolders'), (N'ret.usp_LogExpiredArchiveResult'),
              (N'ret.usp_PurgeTableLogs'), (N'ret.usp_PurgeRunLogs'), (N'ret.usp_ActivateDailyRoutine'),
-             (N'ret.vw_MQ01_LatestRuns'), (N'ret.vw_MQ06_LocksAndRebuildTables')) AS n (Name);
+             (N'ret.vw_MQ01_LatestRuns'), (N'ret.vw_MQ06_LocksAndRebuildTables'), (N'ret.vw_ParquetColumnMap')) AS n (Name);
 
 INSERT INTO #Check (CheckName, Expected, Actual)
 SELECT N'usp_GetExpiredArchiveFolders has @Level', N'yes',

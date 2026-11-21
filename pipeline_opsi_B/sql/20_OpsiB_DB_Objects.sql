@@ -560,18 +560,33 @@ BEGIN
         /* ---- V-08 Parquet compatibility of the exported table ---- */
         IF @ErrCode IS NULL
         BEGIN
+            -- column types that Parquet cannot hold
             SELECT @BadList = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(QUOTENAME(c.name COLLATE DATABASE_DEFAULT), N' (', t.name COLLATE DATABASE_DEFAULT, N')')) COLLATE DATABASE_DEFAULT, N', ')
             FROM sys.columns AS c
             JOIN sys.types AS t ON t.user_type_id = c.user_type_id
             WHERE c.object_id = @ObjectId
               AND (   TYPE_NAME(c.system_type_id) = 'sql_variant'
-                   OR t.is_assembly_type = 1
-                   OR c.name COLLATE DATABASE_DEFAULT LIKE N'%[ ,;{}()=]%'
-                   OR CHARINDEX(NCHAR(9), c.name COLLATE DATABASE_DEFAULT) > 0 OR CHARINDEX(NCHAR(10), c.name COLLATE DATABASE_DEFAULT) > 0 OR CHARINDEX(NCHAR(13), c.name COLLATE DATABASE_DEFAULT) > 0);
+                   OR t.is_assembly_type = 1);
 
             IF @BadList IS NOT NULL
                 SELECT @ErrCode = 'ERR-CFG-08', @CheckCode = 'V-08',
-                       @ErrMsg = LEFT(CONCAT(N'Columns not supported for Parquet export: ', @BadList), 4000);
+                       @ErrMsg = LEFT(CONCAT(N'Column types not supported for Parquet export: ', @BadList), 4000);
+            ELSE
+            BEGIN
+                -- v0.6.1, decision D-6: names with white space or , ; { } ( ) = are renamed in the Parquet file
+                -- (ret.fn_ParquetColumnName); the renamed names must stay unique (case-insensitive)
+                SELECT @BadList = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(QUOTENAME(d.ParquetColumn), N' (', d.Cnt, N' columns)')) COLLATE DATABASE_DEFAULT, N', ')
+                FROM (SELECT ISNULL(ret.fn_ParquetColumnName(c.name), CONCAT(N'column_', c.column_id)) COLLATE Latin1_General_CI_AS AS ParquetColumn,
+                             COUNT(*) AS Cnt
+                      FROM sys.columns AS c
+                      WHERE c.object_id = @ObjectId
+                      GROUP BY ISNULL(ret.fn_ParquetColumnName(c.name), CONCAT(N'column_', c.column_id)) COLLATE Latin1_General_CI_AS
+                      HAVING COUNT(*) > 1) AS d;
+
+                IF @BadList IS NOT NULL
+                    SELECT @ErrCode = 'ERR-CFG-08', @CheckCode = 'V-08',
+                           @ErrMsg = LEFT(CONCAT(N'Parquet column names not unique after renaming (D-6, ret.vw_ParquetColumnMap): ', @BadList), 4000);
+            END;
         END;
 
         /* ---- Interrupted table rebuild of an earlier run (MD-06): drop the new table, revoke the

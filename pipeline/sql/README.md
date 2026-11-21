@@ -8,6 +8,21 @@
 | Target | Azure SQL Database, DWH database, schema `ret`, compatibility level ≥ 130 |
 | Used by | `pipeline-agus/` (linked services `Agus_*`) and `pipeline/` (linked services `LS_RET_*`). Both are generated from the same contract (`tools/sql_contract.json`). |
 
+## Patch v0.6.1 – Parquet column names (decision D-6, 21 Nov 2026)
+
+Dry run of `BI.Fact_PO_Invoice_Retention_UT_A` failed with **ERR-CFG-08** (V-08): column names such as `Volume (000 STC)` or `Price Per Pack` contain white space or `( )`, which the ADF Parquet sink rejects (`ParquetInvalidColumnName`). The user chose option A:
+
+| Object | Change |
+|---|---|
+| `ret.fn_ParquetColumnName` (new function) | Rejected characters (white space and `, ; { } ( ) =`, tab, line feed, carriage return) become `_`, repeated `_` collapsed, leading/trailing `_` removed. Valid names unchanged. Example: `Volume (000 STC)` → `Volume_000_STC` |
+| `ret.usp_ExportSourceRows` | Renamed columns get an alias in the export query; values and column order unchanged |
+| `ret.usp_BeginTable` (V-08) | Names are no longer rejected; still rejected: `sql_variant` / CLR types, and renamed names that are not unique (case-insensitive) |
+| `ret.vw_ParquetColumnMap` (new view) | Source column → column in the archive file, `IsRenamed` (audit, restore) |
+
+**FSD impact:** FR-006/FR-007 say "all columns, no transformation"; with D-6 the column *names* in the archive can differ from the source (values do not). Record D-6 in FSD v1.2.
+
+Existing v0.6 database: run `deploy/08_patch_v0.6.1_parquet_column_names.sql`, then `test/90_verify_v06_deployment.sql` (10 functions, 7 views). If the opsi B objects are deployed, run `pipeline_opsi_B/sql/20_OpsiB_DB_Objects.sql` again afterwards (it carries `usp_BeginTable` with the `#RetOut_` option). New database: deploy/01–05 already contain the change.
+
 ## Changes in v0.6 (alignment with FSD v1.1)
 
 | Topic | FSD | Change |
@@ -30,14 +45,15 @@
 | `DWH_Retention_DB_Objects_v0.6.sql` | Complete consolidated script (sections 0–14) | Yes – the whole file, **or** deploy/01–05 |
 | `deploy/01_schema_tables.sql` | Schema, 10 tables, migration blocks (v0.2 / v0.3 / v0.5) | 1 |
 | `deploy/02_triggers_seed.sql` | 3 triggers, parameter row, 30 error codes | 2 |
-| `deploy/03_functions.sql` | 9 functions | 3 |
+| `deploy/03_functions.sql` | 10 functions (v0.6.1: `fn_ParquetColumnName`) | 3 |
 | `deploy/04_procedures.sql` | 32 stored procedures | 4 |
-| `deploy/05_monitoring_views.sql` | 6 monitoring views | 5 |
+| `deploy/05_monitoring_views.sql` | 6 monitoring views + `vw_ParquetColumnMap` (v0.6.1) | 5 |
 | `deploy/06_reference_examples_monitoring.sql` | Examples and queries, all commented out | No (reference) |
 | `deploy/07_security_roles_TEMPLATE.sql` | Roles and GRANTs, commented out, with placeholders | After DBA review |
 | `test/90_verify_v06_deployment.sql` | Read-only check that v0.6 is fully deployed (object counts, archive layout functions, v0.6 procedures used by ADF v0.3, BlobPath, old-layout inventory rows). Every row must show OK | After deploy/05 |
 | `test/91_reset_table_for_retest.sql` | **DEV/TEST only.** Resets one table (`@TableConfigId`) after a test Initial Cut-off: lists the Blob files to delete, marks the archive inventory REMOVED (avoids ERR-EXP-02) and sets the status back to PENDING | Only for re-tests |
 | `test/92_insert_test_table_config.sql` | **DEV/TEST.** Registers test tables (e.g. copies `<table>_Retention`) in `ret.RetentionConfig` after the V-01..V-04 / V-06 checks; size category from used space; preview with `@Apply = 0` | For tests |
+| `deploy/08_patch_v0.6.1_parquet_column_names.sql` | **v0.6.1 patch (D-6)** for databases already on v0.6: `fn_ParquetColumnName`, `vw_ParquetColumnMap`, `usp_ExportSourceRows`, `usp_BeginTable` | Existing v0.6 databases only |
 | `config/00_insert_default_config.sql` | **v0.1:** explicit defaults of all configuration tables: `RetentionParameter` (batch 10,000 / 3 s, window 21:00–05:00, NULL-check FULL, container `dwh-archive`; optional reset), 30 error codes, missing `RetentionTableStatus` rows | Before `10_…` |
 | `config/10_insert_retention_config.sql` | **v0.2:** the 31 phase-1 tables of FSD App. A.1, BlobPath `schema.table`, ArchiveContainer `dwh-archive`; all other rows set inactive | After step 3 below |
 
