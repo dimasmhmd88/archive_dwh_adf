@@ -15,10 +15,10 @@ SET NOCOUNT ON;
 IF OBJECT_ID(N'tempdb..#Check') IS NOT NULL DROP TABLE #Check;
 CREATE TABLE #Check (Ord INT IDENTITY(1, 1), CheckName NVARCHAR(200), Expected NVARCHAR(400), Actual NVARCHAR(400));
 
--- 1. Object counts (v0.6.1: 10 tables, 32 procedures, 10 functions, 7 views, 3 triggers)
+-- 1. Object counts (v0.6.2: 10 tables, 32 procedures, 10 functions, 8 views, 3 triggers)
 INSERT INTO #Check (CheckName, Expected, Actual)
 SELECT N'Object count ' + k.Kind, CONVERT(NVARCHAR(10), k.Expected), CONVERT(NVARCHAR(10), o.Cnt)
-FROM (VALUES (N'TABLE', 10), (N'PROCEDURE', 32), (N'FUNCTION', 10), (N'VIEW', 7), (N'TRIGGER', 3)) AS k (Kind, Expected)
+FROM (VALUES (N'TABLE', 10), (N'PROCEDURE', 32), (N'FUNCTION', 10), (N'VIEW', 8), (N'TRIGGER', 3)) AS k (Kind, Expected)
 CROSS APPLY (SELECT COUNT(*) AS Cnt FROM sys.objects AS so
              WHERE so.schema_id = SCHEMA_ID(N'ret')
                AND CASE WHEN so.type = 'U' THEN N'TABLE' WHEN so.type = 'P' THEN N'PROCEDURE'
@@ -54,7 +54,7 @@ INSERT INTO #Check (CheckName, Expected, Actual)
 SELECT N'Object ' + n.Name, N'exists', CASE WHEN OBJECT_ID(n.Name) IS NULL THEN N'missing' ELSE N'exists' END
 FROM (VALUES (N'ret.usp_GetRunArchiveFiles'), (N'ret.usp_GetExpiredArchiveFolders'), (N'ret.usp_LogExpiredArchiveResult'),
              (N'ret.usp_PurgeTableLogs'), (N'ret.usp_PurgeRunLogs'), (N'ret.usp_ActivateDailyRoutine'),
-             (N'ret.vw_MQ01_LatestRuns'), (N'ret.vw_MQ06_LocksAndRebuildTables'), (N'ret.vw_ParquetColumnMap')) AS n (Name);
+             (N'ret.vw_MQ01_LatestRuns'), (N'ret.vw_MQ06_LocksAndRebuildTables'), (N'ret.vw_ParquetColumnMap'), (N'ret.vw_MQ07_ArchiveFiles')) AS n (Name);
 
 INSERT INTO #Check (CheckName, Expected, Actual)
 SELECT N'usp_GetExpiredArchiveFolders has @Level', N'yes',
