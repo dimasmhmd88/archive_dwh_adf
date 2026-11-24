@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - monitoring queries (schema ret, SQL v0.6.2 / opsi B)
    -------------------------------------------------------------------------------------
-   Script  : pipeline/sql/monitoring/30_monitoring_queries.sql   Version 0.3 (DRAFT, not executed)   24 November 2026
+   Script  : pipeline/sql/monitoring/30_monitoring_queries.sql   Version 0.3.1 (DRAFT, not executed)   24 November 2026
    Read-only. Run the whole file, or block 0 together with any other block.
 
    FILTERS (block 0) - used by every block
@@ -188,7 +188,7 @@ ORDER BY c.IsActive DESC, c.TableConfigId;
 /* ---- 11. Eligible data preview (same cut-off rule as the pipeline, run date = today UTC+7; no change) ---- */
 --     Reads the whole table: only for one table (@TableConfigId); skipped when @TableConfigId IS NULL,
 --     so that running the whole file never scans all LARGE tables.
-DECLARE @PreviewTc INT, @Sch SYSNAME, @Tab SYSNAME, @Col SYSNAME, @Dwh DATE, @Arc DATE, @sql NVARCHAR(MAX);
+DECLARE @PreviewTc INT, @PreviewName NVARCHAR(300), @Sch SYSNAME, @Tab SYSNAME, @Col SYSNAME, @Dwh DATE, @Arc DATE, @sql NVARCHAR(MAX);
 DECLARE @Preview TABLE (TableConfigId INT, TableName NVARCHAR(300), ArchiveCutoff DATE, DwhCutoff DATE, ExpiredRows BIGINT,
                         ArchivedRows BIGINT, ArchivedFiles INT, FirstArchiveDate DATE, LastArchiveDate DATE,
                         RetainedRows BIGINT, NullDates BIGINT);
@@ -214,9 +214,10 @@ BEGIN
                         ISNULL(SUM(CASE WHEN BusinessDate >= @Dwh THEN RowCnt END), 0),
                         ISNULL(SUM(CASE WHEN BusinessDate IS NULL THEN RowCnt END), 0)
                  FROM d;';
+    SET @PreviewName = @Sch + N'.' + @Tab;       -- EXEC parameters cannot be expressions
     INSERT INTO @Preview
     EXEC sp_executesql @sql, N'@Tc INT, @Name NVARCHAR(300), @Dwh DATE, @Arc DATE',
-         @Tc = @PreviewTc, @Name = @Sch + N'.' + @Tab, @Dwh = @Dwh, @Arc = @Arc;
+         @Tc = @PreviewTc, @Name = @PreviewName, @Dwh = @Dwh, @Arc = @Arc;
     FETCH NEXT FROM cur INTO @PreviewTc, @Sch, @Tab, @Col, @Dwh, @Arc;
 END;
 CLOSE cur; DEALLOCATE cur;
