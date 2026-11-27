@@ -2,8 +2,11 @@
    DWH Data Retention and Archiving - default values of all configuration tables
    -------------------------------------------------------------------------------------
    Script        : config/00_insert_default_config.sql
-   Version       : 0.1 (DRAFT - not reviewed, not executed against any database)
-   Date          : 13 November 2026
+   Version       : 0.2 (DRAFT - not reviewed, not executed against any database)
+   Date          : 27 November 2026
+   History       : 0.1  13 Nov 2026  initial defaults (BatchSize 10000, BatchPauseSeconds 3)
+                   0.2  27 Nov 2026  BatchSize 20000, BatchPauseSeconds 2 - UAT request, candidate decision D-7
+                                     (to be recorded in FSD v1.2; deviates from BRQ-08 10000 / 3)
    Requires      : DWH_Retention_DB_Objects_v0.6.sql (deploy/01..05) in the DWH database.
    Run order     : 00_insert_default_config.sql  ->  10_insert_retention_config.sql (31 phase-1 tables)
    Note          : deploy/02_triggers_seed.sql already inserts the parameter row and the error codes; this
@@ -22,8 +25,8 @@
      Log / lock / run tables   written by the procedures only
 
    DEFAULT VALUES (schema defaults of v0.6; values not decided in FSD v1.1 are marked "confirm")
-     BatchSize               10000        BRQ-08                         confirm with DBA
-     BatchPauseSeconds       3            BRQ-08                         confirm with DBA
+     BatchSize               20000        UAT request, D-7 (BRQ-08 was 10000)   confirm with DBA
+     BatchPauseSeconds       2            UAT request, D-7 (BRQ-08 was 3)       confirm with DBA
      IcWindowStart / End     21:00 / 05:00 UTC+7 (BR-17, FR-019)
      DailyRoutineStartDate   NULL         set by ret.usp_ActivateDailyRoutine after the Initial Cut-off (AC-15);
                                           never changed by this script
@@ -37,6 +40,9 @@
                                     tuned by the DBA stay unchanged.
      @ResetToDefault = 1          : the tunable parameters above are set back to the defaults, except
                                     DailyRoutineStartDate. Refused while a run is RUNNING.
+   NOTE (v0.2)                  : deploy/02 already inserts the parameter row with the schema defaults
+                                    (BatchSize 10000, BatchPauseSeconds 3). To apply 20000 / 2 in a new or existing
+                                    environment, run this script once with @ResetToDefault = 1.
    ===================================================================================== */
 
 SET NOCOUNT ON;
@@ -53,8 +59,8 @@ END;
    Settings - change here only
    ------------------------------------------------------------------------------------- */
 DECLARE @ResetToDefault         BIT             = 0;
-DECLARE @BatchSize              INT             = 10000;
-DECLARE @BatchPauseSeconds      INT             = 3;
+DECLARE @BatchSize              INT             = 20000;   -- D-7 (UAT), was 10000
+DECLARE @BatchPauseSeconds      INT             = 2;       -- D-7 (UAT), was 3
 DECLARE @IcWindowStart          TIME(0)         = '21:00';
 DECLARE @IcWindowEnd            TIME(0)         = '05:00';
 DECLARE @DeleteRetryCount       TINYINT         = NULL;
