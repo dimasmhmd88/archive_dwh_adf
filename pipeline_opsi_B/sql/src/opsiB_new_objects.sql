@@ -24,6 +24,22 @@ IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_RetentionCo
         ADD CONSTRAINT CK_RetentionConfig_ExportParallelism CHECK (ExportParallelism IS NULL OR ExportParallelism BETWEEN 1 AND 16);
 GO
 
+/* A.2 ChildDeleteMode (D-8, v0.7.1-opsiB) - how ret.usp_BatchDelete selects the rows of a CHILD table:
+       JOIN      (default) join to the header table and its date in every batch (v0.6 behaviour)
+       KEY_TABLE header keys of the validated range read once into a temp table; batches join to it only
+       Own-dated tables are not affected. */
+IF COL_LENGTH(N'ret.RetentionParameter', N'ChildDeleteMode') IS NULL
+BEGIN
+    ALTER TABLE ret.RetentionParameter
+        ADD ChildDeleteMode VARCHAR(10) NOT NULL
+            CONSTRAINT DF_RetentionParameter_ChildDeleteMode DEFAULT ('JOIN') WITH VALUES;
+END;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_RetentionParameter_ChildDeleteMode')
+    ALTER TABLE ret.RetentionParameter
+        ADD CONSTRAINT CK_RetentionParameter_ChildDeleteMode CHECK (ChildDeleteMode IN ('JOIN', 'KEY_TABLE'));
+GO
+
 -- @@PROCEDURES@@
 /* =====================================================================================
    C. NEW PROCEDURES (option B)

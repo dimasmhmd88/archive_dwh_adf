@@ -2,10 +2,11 @@
 
 | Item | Value |
 |---|---|
-| Version | ADF opsi B v0.1, SQL v0.7-opsiB |
+| Version | ADF opsi B v0.1 (unchanged), SQL v0.7.1-opsiB |
 | Status | **Draft – not reviewed, not executed in ADF or against a database** |
-| Date | 17 November 2026 |
+| Date | 17 November 2026; SQL v0.7.1-opsiB 27 November 2026 (D-8 child delete mode) |
 | Based on | `pipeline-agus/` v0.3 (linked services `Agus_SqlServer_dwh`, `Agus_AzureBlobStorage1`) and SQL v0.6.1 (D-6 Parquet column names, 21 Nov 2026) |
+| Decisions to record | **D-7** (UAT): BatchSize 20,000, BatchPauseSeconds 2. **D-8**: child tables deleted through a header-key temp table (`ChildDeleteMode = KEY_TABLE`), default unchanged (`JOIN`). Both for FSD v1.2, not approved yet. |
 | Decision needed | Change of **DEC-07** (export one business date at a time) to "N business dates of one table exported in parallel per chunk". FSD v1.2 update. This package is the proposal; it is not approved. |
 
 The existing packages `pipeline-agus/` and `pipeline/` are **not changed**. This folder is separate.
@@ -32,10 +33,13 @@ Lookups per table with one business date: **12 → 7** (StartRunAndGetTables, Be
 pipeline_opsi_B/
 ├── README.md
 ├── sql/
-│   ├── 20_OpsiB_DB_Objects.sql      ← deploy (generated, SQL v0.7-opsiB)
+│   ├── 20_OpsiB_DB_Objects.sql      ← deploy (generated, SQL v0.7.1-opsiB)
 │   ├── 21_verify_opsiB.sql          ← check after deploy, every row OK
+│   ├── 22_check_child_delete_mode.sql ← read-only: JOIN vs KEY_TABLE select the same child rows (D-8)
 │   ├── 29_rollback_opsiB.sql        ← remove opsi B objects (back to v0.6)
-│   └── src/opsiB_new_objects.sql    ← hand-written part (columns + 6 new procedures)
+│   └── src/
+│       ├── opsiB_new_objects.sql    ← hand-written part (columns + 6 new procedures)
+│       └── usp_BatchDelete_opsiB.sql ← opsi B source of usp_BatchDelete (ChildDeleteMode), used instead of 04
 ├── adf/                             ← ADF JSON (Git layout): 3 datasets, 11 pipelines, 1 trigger
 ├── arm/                             ← ARM template (no linked services)
 └── tools/
@@ -77,12 +81,37 @@ The PL_RETB_* names let the package sit next to pipeline-agus in the same factor
 
 The ADF identity needs EXECUTE on the 6 new procedures (with a schema-level `GRANT EXECUTE ON SCHEMA::ret` nothing changes).
 
+### 3.1 Child delete mode (D-8, SQL v0.7.1-opsiB)
+
+`ret.RetentionParameter.ChildDeleteMode` (VARCHAR(10), NOT NULL, default `JOIN`, CHECK `JOIN` / `KEY_TABLE`) decides how `ret.usp_BatchDelete` deletes the rows of a **child** table. Own-dated tables are not affected. **No ADF change**: same procedure, same parameters, same result columns.
+
+| | `JOIN` (default, v0.6) | `KEY_TABLE` |
+|---|---|---|
+| Header table read | in every batch (join + header date filter) | **once** per call: distinct join keys of the header rows in the validated range → `#RetBdParentKey` (KeySeq + k1..kn, header column types and collations) |
+| Batch | `DELETE TOP (BatchSize) t FROM child t LEFT JOIN header p … WHERE p.date < @Upper` | `DELETE TOP (BatchSize) t FROM child t JOIN #RetBdParentKey k … WHERE k.KeySeq BETWEEN @SeqFrom AND @SeqTo` |
+| BatchSize means | child rows | child rows (unchanged); keys are processed in windows of BatchSize keys, a batch below BatchSize moves to the next window, empty windows are not counted and not paused |
+| Pre-delete recount (DBR-06) | header join | child JOIN key table – counts exactly the rows the batches can delete |
+| Final recount (ERR-DEL-02) | header join | header join (independent check) |
+| Orphans (DBR-21) | never match | never in the key table |
+
+Unchanged in both modes: BR-08 gate, per-batch transaction and log update, `BatchPauseSeconds`, retry 1205/1222, `DeleteLockTimeoutMs`, IC window stop, resume (the key table is rebuilt in every call; the header still exists because the child is processed first, DBR-18/19). A key column type that cannot be copied (text, xml, sql_variant, …) falls back to `JOIN` (note in the step message). The step message shows the mode, e.g. `Deleted 120000 rows in 6 batches. ChildDeleteMode KEY_TABLE: 4500 header keys.`
+
+`pipeline/sql/deploy/04_procedures.sql` keeps the v0.6 text (old packages unchanged); the generator takes `usp_BatchDelete` from `sql/src/usp_BatchDelete_opsiB.sql`. Never run `deploy/04` (or patch 08) after `20_OpsiB_DB_Objects.sql` without running 20 again: it would overwrite the opsi B procedures.
+
+Risks: tempdb space for the key table (Initial Cut-off of a large header: millions of keys); an index on the child join key is still required (`21_verify_opsiB.sql` section 6).
+
+```sql
+UPDATE ret.RetentionParameter SET ChildDeleteMode = 'KEY_TABLE', ModifiedBy = ORIGINAL_LOGIN(), ModifiedAt = ret.fn_NowUtc7()
+ WHERE ParameterSetId = 1;      -- back: 'JOIN'. Effective from the next usp_BatchDelete call.
+```
+
 ## 4. Deployment order
 
 1. Check that SQL v0.6.1 is complete (`pipeline/sql/deploy/08_patch_v0.6.1_parquet_column_names.sql` on an existing v0.6 database): `pipeline/sql/test/90_verify_v06_deployment.sql` – every row OK.
    After any later change of `pipeline/sql/deploy/04_procedures.sql`, regenerate and run `20_OpsiB_DB_Objects.sql` again.
 2. Run `sql/20_OpsiB_DB_Objects.sql` (whole file, one session).
-3. Run `sql/21_verify_opsiB.sql` – every row OK (38 procedures).
+3. Run `sql/21_verify_opsiB.sql` – every row OK (38 procedures, ChildDeleteMode column, usp_BatchDelete v0.7.1).
+   Optional (D-8): `sql/22_check_child_delete_mode.sql` per child table, then set `ChildDeleteMode = 'KEY_TABLE'`.
 4. ADF (Git mode, branch): create the pipelines from `adf/pipeline/*.json` **in this order** (children first): `03F`, `03G`, `03E`, `03B`, `03D`, `03C`, `04`, `03A`, `03`, `01`, `02`; then the trigger (leave it Stopped). The datasets already exist (pipeline-agus).
 5. Validate all, Debug `PL_RETB_01_InitialCutoff_Master` with `ValidateOnly = true` first.
 
@@ -109,10 +138,16 @@ Effective from the next chunk. Recommended: start with 4, go to 8 for SMALL / ME
 | 6 | Resume: stop a batch delete (window) and run again | PL_RETB_03B finishes the range, then identify + export of new data |
 | 7 | Daily Routine 1 table (after `usp_ActivateDailyRoutine`) | 1 chunk; expired archive deletion through PL_RETB_04 (YEAR and FILE counts in RetentionTableLog) |
 | 8 | Regression: run pipeline-agus PL_RET_01 on another test table after deploying SQL v0.7-opsiB | Unchanged behaviour |
+| 9 | D-8: `22_check_child_delete_mode.sql` on a child table | Result OK (same child rows in both modes) |
+| 10 | D-8: IC header + child (child first in `TableConfigIdList`), `ChildDeleteMode = KEY_TABLE` | Child RowsDeleted = validated count, message shows KEY_TABLE and the key count; header deleted after; orphan rows still present |
+| 11 | D-8: one header with more child rows than BatchSize | Several full batches in one window, no row left (no ERR-DEL-02) |
+| 12 | D-8: composite join key (2 columns in RetentionParentKey) | Same as 10 |
+| 13 | D-8: stop the child delete at the IC window end, run again | Resume rebuilds the key table and finishes the range |
+| 14 | D-8: same data with `JOIN` and with `KEY_TABLE` (reset with 91) | Same counts; delete duration compared |
 
 ## 7. Known limitations and risks
 
-- **Not executed.** SQL and ADF are checked statically only (generator checks, `validate_adf.py`); no SQL Server was available to compile the script.
+- **Not executed.** SQL v0.7.1 (KEY_TABLE) is also not compiled. SQL and ADF are checked statically only (generator checks, `validate_adf.py`); no SQL Server was available to compile the script.
 - **DWH load:** N reads of the same table at the same time; an index on the date column is strongly recommended for LARGE tables. Agree N with the DBA.
 - **Inherited from v0.3:** a file written by a Copy whose result could not be logged (log Lookup failed) stays PENDING and is not removed by the cleanup; the next run overwrites it with the same name.
 - ADF may run fewer than N items in parallel when the integration runtime is busy.
