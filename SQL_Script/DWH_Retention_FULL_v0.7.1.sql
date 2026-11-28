@@ -1286,7 +1286,9 @@ GO
 /* 6.2 ret.usp_GetTablesToProcess - table selection (FR-004) - v0.5 (CR-01, proposed, not approved)
        DAILY_ROUTINE : active tables whose Initial Cut-off completed before the run date (DBR-04),
                        from DailyRoutineStartDate onwards; child tables first (DBR-19).
-       INITIAL_CUTOFF: explicit @TableConfigIdList in the given order, or EMPTY list = automatic mode:
+       INITIAL_CUTOFF: explicit @TableConfigIdList in the given order (v0.7.1, D-9: a child table listed AFTER
+                       its header is moved directly before the header; the step log names the moves),
+                       or EMPTY list = automatic mode:
                        every active table not COMPLETED, SMALL/MEDIUM before LARGE, child first,
                        then TableConfigId. Gates as in v0.4 (inactive, completed, running, DBR-05,
                        DBR-18, downtime reference); not eligible tables are logged SKIPPED (ERR-CFG-07).
@@ -1303,7 +1305,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = ret.fn_NowUtc7();
     DECLARE @ProcessType VARCHAR(20), @RunDate DATE, @RunStatus VARCHAR(25), @Downtime NVARCHAR(100),
             @DrStartDate DATE, @Container NVARCHAR(63), @Msg NVARCHAR(4000), @Selected INT, @Skipped INT,
-            @Unknown NVARCHAR(4000), @StepStatus VARCHAR(10), @IsAutoMode BIT = 0;
+            @Unknown NVARCHAR(4000), @StepStatus VARCHAR(10), @IsAutoMode BIT = 0, @Moved NVARCHAR(MAX);
 
     SELECT @ProcessType = ProcessType, @RunDate = RunDate, @RunStatus = Status, @Downtime = DowntimeReference
     FROM ret.RetentionRunLog
@@ -1389,6 +1391,36 @@ BEGIN
             FROM STRING_SPLIT(@TableConfigIdList, N',', 1) AS x
             WHERE LTRIM(RTRIM(x.value)) <> N''
             GROUP BY TRY_CONVERT(INT, LTRIM(RTRIM(x.value)));
+
+            /* ---- v0.7.1, decision D-9 (28 Nov 2026): child before header in an explicit list.
+                    A child whose header is listed EARLIER takes the position of the header and is processed
+                    directly before it (several children of one header: in their listed order). Every other
+                    table keeps its listed position. Gate DBR-18 below is unchanged (a header whose active
+                    child is neither COMPLETED nor listed is still SKIPPED). ---- */
+            SELECT @Moved = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(li.TableConfigId, N' before ', h.TableConfigId)) COLLATE DATABASE_DEFAULT, N', ')
+                            WITHIN GROUP (ORDER BY li.Ord)
+            FROM #List AS li
+            JOIN ret.RetentionConfig AS c ON c.TableConfigId = li.TableConfigId
+            JOIN #List AS h ON h.TableConfigId = c.ParentTableConfigId
+            WHERE h.Ord < li.Ord;
+
+            IF @Moved IS NOT NULL
+            BEGIN
+                UPDATE li
+                   SET Ord = n.NewOrd
+                  FROM #List AS li
+                  JOIN (SELECT x.TableConfigId,
+                               ROW_NUMBER() OVER (ORDER BY x.EffPos, x.ChildFirst, x.Ord) AS NewOrd
+                        FROM (SELECT l.TableConfigId, l.Ord,
+                                     CASE WHEN h.Ord IS NOT NULL AND h.Ord < l.Ord THEN h.Ord ELSE l.Ord END AS EffPos,
+                                     CASE WHEN h.Ord IS NOT NULL THEN 0 ELSE 1 END AS ChildFirst
+                              FROM #List AS l
+                              LEFT JOIN ret.RetentionConfig AS c ON c.TableConfigId = l.TableConfigId
+                              LEFT JOIN #List AS h ON h.TableConfigId = c.ParentTableConfigId) AS x) AS n
+                    ON n.TableConfigId = li.TableConfigId;
+
+                SET @Msg = CONCAT(N'Child tables moved before their header table (D-9): ', @Moved, N'.');
+            END;
         END;
 
         /* ---- Gates of v0.4, unchanged, applied to the explicit or automatic list ---- */
@@ -4689,7 +4721,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = ret.fn_NowUtc7();
     DECLARE @ProcessType VARCHAR(20), @RunDate DATE, @RunStatus VARCHAR(25), @Downtime NVARCHAR(100),
             @DrStartDate DATE, @Container NVARCHAR(63), @Msg NVARCHAR(4000), @Selected INT, @Skipped INT,
-            @Unknown NVARCHAR(4000), @StepStatus VARCHAR(10), @IsAutoMode BIT = 0;
+            @Unknown NVARCHAR(4000), @StepStatus VARCHAR(10), @IsAutoMode BIT = 0, @Moved NVARCHAR(MAX);
 
     SELECT @ProcessType = ProcessType, @RunDate = RunDate, @RunStatus = Status, @Downtime = DowntimeReference
     FROM ret.RetentionRunLog
@@ -4775,6 +4807,36 @@ BEGIN
             FROM STRING_SPLIT(@TableConfigIdList, N',', 1) AS x
             WHERE LTRIM(RTRIM(x.value)) <> N''
             GROUP BY TRY_CONVERT(INT, LTRIM(RTRIM(x.value)));
+
+            /* ---- v0.7.1, decision D-9 (28 Nov 2026): child before header in an explicit list.
+                    A child whose header is listed EARLIER takes the position of the header and is processed
+                    directly before it (several children of one header: in their listed order). Every other
+                    table keeps its listed position. Gate DBR-18 below is unchanged (a header whose active
+                    child is neither COMPLETED nor listed is still SKIPPED). ---- */
+            SELECT @Moved = STRING_AGG(CONVERT(NVARCHAR(MAX), CONCAT(li.TableConfigId, N' before ', h.TableConfigId)) COLLATE DATABASE_DEFAULT, N', ')
+                            WITHIN GROUP (ORDER BY li.Ord)
+            FROM #List AS li
+            JOIN ret.RetentionConfig AS c ON c.TableConfigId = li.TableConfigId
+            JOIN #List AS h ON h.TableConfigId = c.ParentTableConfigId
+            WHERE h.Ord < li.Ord;
+
+            IF @Moved IS NOT NULL
+            BEGIN
+                UPDATE li
+                   SET Ord = n.NewOrd
+                  FROM #List AS li
+                  JOIN (SELECT x.TableConfigId,
+                               ROW_NUMBER() OVER (ORDER BY x.EffPos, x.ChildFirst, x.Ord) AS NewOrd
+                        FROM (SELECT l.TableConfigId, l.Ord,
+                                     CASE WHEN h.Ord IS NOT NULL AND h.Ord < l.Ord THEN h.Ord ELSE l.Ord END AS EffPos,
+                                     CASE WHEN h.Ord IS NOT NULL THEN 0 ELSE 1 END AS ChildFirst
+                              FROM #List AS l
+                              LEFT JOIN ret.RetentionConfig AS c ON c.TableConfigId = l.TableConfigId
+                              LEFT JOIN #List AS h ON h.TableConfigId = c.ParentTableConfigId) AS x) AS n
+                    ON n.TableConfigId = li.TableConfigId;
+
+                SET @Msg = CONCAT(N'Child tables moved before their header table (D-9): ', @Moved, N'.');
+            END;
         END;
 
         /* ---- Gates of v0.4, unchanged, applied to the explicit or automatic list ---- */
