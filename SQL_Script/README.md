@@ -103,6 +103,8 @@ FROM ret.RetentionParameter WHERE ParameterSetId = 1;
 | ExportParallelism | 4 | opsi B (DEC-07 change) |
 | ChildDeleteMode | JOIN (`KEY_TABLE` after `verify/22`) | D-8, to record in FSD v1.2 |
 
+**Table order (D-9, 28 Nov 2026, safeguard for tests):** in an explicit `TableConfigIdList` a child table listed after its header is moved directly before the header (`52,53` → 53, 52; `10,52,20,53` → 10, 53, 52, 20). Other tables keep their listed position; the step log `SELECT_TABLES` names every move. A header whose active child is neither COMPLETED nor listed is still SKIPPED (DBR-18). The Daily Routine and the automatic mode (empty list) already process child tables first. FSD says "in the given order": record D-9 in FSD v1.2.
+
 ## 4. Changing the SQL
 
 - `deploy/20_OpsiB_DB_Objects.sql` and `DWH_Retention_FULL_v0.7.1.sql` are generated – never edit them by hand.
@@ -119,4 +121,4 @@ python3 SQL_Script/tools/make_full_bundle.py .
 
 - No SQL Server was available to the author: all scripts are checked statically only.
 - Child tables (header / detail) are out of go-live phase 1 (MD-05); activating them is a scope decision.
-- Decisions D-6, D-7, D-8 and the disabled Initial Cut-off window (`IcWindowStart = IcWindowEnd`) are not yet in the FSD.
+- Decisions D-6, D-7, D-8, D-9 and the disabled Initial Cut-off window (`IcWindowStart = IcWindowEnd`) are not yet in the FSD.
