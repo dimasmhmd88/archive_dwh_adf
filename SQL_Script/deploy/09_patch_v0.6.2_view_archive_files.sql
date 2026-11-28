@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - schema ret - PATCH v0.6.2 (monitoring view MQ-07)
    -------------------------------------------------------------------------------------
-   Script  : pipeline/sql/deploy/09_patch_v0.6.2_view_archive_files.sql
+   Script  : SQL_Script/deploy/09_patch_v0.6.2_view_archive_files.sql
    Version : 0.6.2 (DRAFT - not reviewed, not executed against any database)   Date: 23 November 2026
    Content : ret.vw_MQ07_ArchiveFiles - row counts per Parquet file (DWH / read / written), path, status, duration
    Apply to: databases already on v0.6 / v0.6.1. New deployments: deploy/05 already contains the view.

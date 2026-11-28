@@ -6,7 +6,7 @@
 | Package version | 0.3 – Draft for review (see section 0 for the changes of 11 Nov 2026) |
 | Date | 11 November 2026 (v0.2: 31 October 2026) |
 | Status | **Not approved.** Not imported or executed in any Data Factory. |
-| Sources | FSD_DWH_Data_Retention_v1.1 (Final Document/, FSD-DWH-RET v1.1, 10 Nov 2026, Draft for Review, not approved); `sql/DWH_Retention_DB_Objects_v0.6.sql` (draft, not executed). Earlier: FSD v0.2, SQL v0.4/v0.5 |
+| Sources | FSD_DWH_Data_Retention_v1.1 (Final Document/, FSD-DWH-RET v1.1, 10 Nov 2026, Draft for Review, not approved); `../SQL_Script/` (draft, not executed; formerly `sql/DWH_Retention_DB_Objects_v0.6.sql`). Earlier: FSD v0.2, SQL v0.4/v0.5 |
 | Contract followed | "ADF CALL SEQUENCE PER TABLE" in the SQL v0.6 header; procedure parameters and result columns in `tools/sql_contract.json` (SQL v0.6) |
 
 The pipelines contain no business logic of their own. Every decision (table selection, checks, cut-off dates, validation, deletion, rebuild, expiry) is taken by the schema `ret` procedures; ADF only orchestrates, copies rows to Parquet and lists/deletes blob folders (FSD 6.1, FR-021).
@@ -15,7 +15,7 @@ The pipelines contain no business logic of their own. Every decision (table sele
 
 ## 0. Changes in v0.3 (11 Nov 2026, alignment with FSD v1.1)
 
-The same changes are made in `../pipeline-agus/` (variant with the user's linked services `Agus_*`). Details are in `../pipeline-agus/README.md` section 2 and `sql/README.md`.
+The same changes are made in `../pipeline-agus/` (variant with the user's linked services `Agus_*`). Details are in `../pipeline-agus/README.md` section 2 and `../SQL_Script/HISTORY_v0.6.md`.
 
 - **PL_RET_01:**
   - new parameter `ValidateOnly`: dry validation, process type VALIDATION (decision D-3)
@@ -137,7 +137,7 @@ Facts are stated as found in the sources; recommendations are marked [REC].
 
 **Prerequisites (before import)**
 
-1. Deploy `sql/DWH_Retention_DB_Objects_v0.6.sql` (or `sql/deploy/01`–`05`) to the DWH database (development first), then `sql/config/10_insert_retention_config.sql`.
+1. Deploy the SQL objects as described in `../SQL_Script/README.md` (development first), then `../SQL_Script/config/10_insert_retention_config.sql`.
 2. Create the database user for the factory managed identity and add it to `ret_adf_executor` (SQL section 13, commented out; review with the DBA).
 3. Give the factory managed identity *Storage Blob Data Contributor* on the archive container only (SEC-05).
 4. `UPDATE ret.RetentionParameter SET ArchiveContainer = N'<container>' WHERE ParameterSetId = 1;` (D-02).

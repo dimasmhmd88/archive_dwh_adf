@@ -8,7 +8,7 @@ VARIANT pipeline_opsi_B (option B, derived from pipeline-agus v0.3):
   - PL_RETB_04 expired-archive deletion in one pipeline (YEAR and FILE level decided by one Lookup)
   - pipeline / trigger names PL_RETB_* / TR_RETB_* and folder "DWH Retention Opsi B", so that the package can
     sit next to pipeline-agus in the same factory; datasets DS_RET_* are shared (identical definitions)
-  - requires SQL v0.7-opsiB (pipeline_opsi_B/sql/20_OpsiB_DB_Objects.sql) on top of SQL v0.6
+  - requires SQL v0.7-opsiB (SQL_Script/deploy/20_OpsiB_DB_Objects.sql) on top of SQL v0.6
 Uses the linked services that already exist in the factory (created by the user):
   Agus_SqlServer_dwh      type SqlServer         -> DWH database (schema ret)
   Agus_AzureBlobStorage1  type AzureBlobStorage  -> storage account stormsfsax01loc10dev

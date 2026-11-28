@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - monitoring queries (schema ret, SQL v0.6.2 / opsi B)
    -------------------------------------------------------------------------------------
-   Script  : pipeline/sql/monitoring/30_monitoring_queries.sql   Version 0.3.1 (DRAFT, not executed)   24 November 2026
+   Script  : SQL_Script/monitoring/30_monitoring_queries.sql   Version 0.3.1 (DRAFT, not executed)   24 November 2026
    Read-only. Run the whole file, or block 0 together with any other block.
 
    FILTERS (block 0) - used by every block
@@ -91,7 +91,7 @@ BEGIN
         N'@RunId BIGINT, @Tc INT', @RunId = @RunId, @Tc = @TableConfigId;
 END
 ELSE
-    SELECT N'ret.vw_MQ07_ArchiveFiles not found: run pipeline/sql/deploy/09_patch_v0.6.2_view_archive_files.sql.' AS Warning;
+    SELECT N'ret.vw_MQ07_ArchiveFiles not found: run SQL_Script/deploy/09_patch_v0.6.2_view_archive_files.sql.' AS Warning;
 
 /* ---- 4. Errors and skipped tables of the run, with the meaning of the error code ---- */
 SELECT l.TableLogId, c.SchemaName + N'.' + c.TableName AS TableName, l.Status, l.ErrorCode, e.Category,
@@ -273,7 +273,7 @@ IF OBJECT_ID(N'ret.vw_ParquetColumnMap', N'V') IS NOT NULL
                          WHERE IsRenamed = 1 AND (@Tc IS NULL OR TableConfigId = @Tc)
                          ORDER BY TableConfigId, ColumnOrdinal;', N'@Tc INT', @Tc = @TableConfigId;
 ELSE
-    SELECT N'ret.vw_ParquetColumnMap not found: run pipeline/sql/deploy/08_patch_v0.6.1_parquet_column_names.sql.' AS Warning;
+    SELECT N'ret.vw_ParquetColumnMap not found: run SQL_Script/deploy/08_patch_v0.6.1_parquet_column_names.sql.' AS Warning;
 
 /* ---- 16. Log volume (log retention, LogRetentionYears) ---- */
 SELECT N'RetentionTableLog' AS LogTable, COUNT(*) AS Rows, MIN(StartTime) AS Oldest

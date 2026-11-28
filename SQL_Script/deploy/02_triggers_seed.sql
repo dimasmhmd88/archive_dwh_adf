@@ -2,7 +2,7 @@
    DWH Data Retention and Archiving - schema ret - 02_triggers_seed.sql
    Part of DWH_Retention_DB_Objects_v0.6.sql (DRAFT - not reviewed, not executed against any database).
    Triggers and seed data: parameter row and error codes (sections 2-3)
-   Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
+   Deploy order: see SQL_Script/README.md. Run connected to the DWH database.
    ===================================================================================== */
 
 SET ANSI_NULLS ON;

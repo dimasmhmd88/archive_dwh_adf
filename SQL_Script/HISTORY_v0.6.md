@@ -1,4 +1,6 @@
-# SQL database objects – schema `ret` (v0.6)
+# SQL database objects – schema `ret` (v0.6) – HISTORY
+
+> Former `pipeline/sql/README.md`, kept for the change history. Since 28 Nov 2026 all SQL is in `SQL_Script/` (deployment order: `README.md`). `DWH_Retention_DB_Objects_v0.6.sql` was removed and is replaced by the generated `DWH_Retention_FULL_v0.7.1.sql`; the file names in the tables below are otherwise unchanged (folders: `deploy/`, `config/`, `verify/`, `monitoring/`, `test/`).
 
 | Item | Value |
 |---|---|
@@ -21,7 +23,7 @@ Dry run of `BI.Fact_PO_Invoice_Retention_UT_A` failed with **ERR-CFG-08** (V-08)
 
 **FSD impact:** FR-006/FR-007 say "all columns, no transformation"; with D-6 the column *names* in the archive can differ from the source (values do not). Record D-6 in FSD v1.2.
 
-Existing v0.6 database: run `deploy/08_patch_v0.6.1_parquet_column_names.sql`, then `test/90_verify_v06_deployment.sql` (10 functions, 7 views). If the opsi B objects are deployed, run `pipeline_opsi_B/sql/20_OpsiB_DB_Objects.sql` again afterwards (it carries `usp_BeginTable` with the `#RetOut_` option). New database: deploy/01–05 already contain the change.
+Existing v0.6 database: run `deploy/08_patch_v0.6.1_parquet_column_names.sql`, then `verify/90_verify_v06_deployment.sql` (10 functions, 7 views). If the opsi B objects are deployed, run `SQL_Script/deploy/20_OpsiB_DB_Objects.sql` again afterwards (it carries `usp_BeginTable` with the `#RetOut_` option). New database: deploy/01–05 already contain the change.
 
 ## Changes in v0.6 (alignment with FSD v1.1)
 
@@ -48,9 +50,9 @@ Existing v0.6 database: run `deploy/08_patch_v0.6.1_parquet_column_names.sql`, t
 | `deploy/03_functions.sql` | 10 functions (v0.6.1: `fn_ParquetColumnName`) | 3 |
 | `deploy/04_procedures.sql` | 32 stored procedures | 4 |
 | `deploy/05_monitoring_views.sql` | 7 monitoring views (MQ-01..07) + `vw_ParquetColumnMap` | 5 |
-| `deploy/06_reference_examples_monitoring.sql` | Examples and queries, all commented out | No (reference) |
+| `monitoring/06_reference_examples_monitoring.sql` | Examples and queries, all commented out | No (reference) |
 | `deploy/07_security_roles_TEMPLATE.sql` | Roles and GRANTs, commented out, with placeholders | After DBA review |
-| `test/90_verify_v06_deployment.sql` | Read-only check that v0.6 is fully deployed (object counts, archive layout functions, v0.6 procedures used by ADF v0.3, BlobPath, old-layout inventory rows). Every row must show OK | After deploy/05 |
+| `verify/90_verify_v06_deployment.sql` | Read-only check that v0.6 is fully deployed (object counts, archive layout functions, v0.6 procedures used by ADF v0.3, BlobPath, old-layout inventory rows). Every row must show OK | After deploy/05 |
 | `test/91_reset_table_for_retest.sql` | **DEV/TEST only.** Resets one table (`@TableConfigId`) after a test Initial Cut-off: lists the Blob files to delete, marks the archive inventory REMOVED (avoids ERR-EXP-02) and sets the status back to PENDING | Only for re-tests |
 | `test/92_insert_test_table_config.sql` | **DEV/TEST.** Registers test tables (e.g. copies `<table>_Retention`) in `ret.RetentionConfig` after the V-01..V-04 / V-06 checks; size category from used space; preview with `@Apply = 0` | For tests |
 | `deploy/08_patch_v0.6.1_parquet_column_names.sql` | **v0.6.1 patch (D-6)** for databases already on v0.6: `fn_ParquetColumnName`, `vw_ParquetColumnMap`, `usp_ExportSourceRows`, `usp_BeginTable` | Existing v0.6 databases only |
@@ -62,7 +64,7 @@ Existing v0.6 database: run `deploy/08_patch_v0.6.1_parquet_column_names.sql`, t
 | `config/00_insert_default_config.sql` | **v0.1:** explicit defaults of all configuration tables: `RetentionParameter` (batch 10,000 / 3 s, window 21:00–05:00, NULL-check FULL, container `dwh-archive`; optional reset), 30 error codes, missing `RetentionTableStatus` rows | Before `10_…` |
 | `config/10_insert_retention_config.sql` | **v0.2:** the 31 phase-1 tables of FSD App. A.1, BlobPath `schema.table`, ArchiveContainer `dwh-archive`; all other rows set inactive | After step 3 below |
 
-**Partial deployment.** A database with the v0.6 tables and views but the v0.5 functions and procedures writes the old archive layout `<BlobPath>/year=YYYY/month=MM/day=DD/<schema>_<table>_<yyyyMMdd>_<RunId>.parquet` (seen in the first test, 15 Nov 2026). Deploy deploy/01–05 in order in one session (03 and 04 directly after each other) and run `test/90_verify_v06_deployment.sql`.
+**Partial deployment.** A database with the v0.6 tables and views but the v0.5 functions and procedures writes the old archive layout `<BlobPath>/year=YYYY/month=MM/day=DD/<schema>_<table>_<yyyyMMdd>_<RunId>.parquet` (seen in the first test, 15 Nov 2026). Deploy deploy/01–05 in order in one session (03 and 04 directly after each other) and run `verify/90_verify_v06_deployment.sql`.
 
 The v0.5 files (`DWH_Retention_DB_Objects_v0.5.sql`, `…_v0.5_patch.sql`) are replaced by v0.6 and remain in the Git history. v0.6 can be run over a v0.5 / v0.5.1 database: the migration blocks and `CREATE OR ALTER` update it.
 

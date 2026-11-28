@@ -4,7 +4,7 @@
 |---|---|
 | Version | 0.3 – 11 November 2026 (v0.2: 6 Nov 2026) |
 | Reference | FSD_DWH_Data_Retention_v1.1 (FSD-DWH-RET v1.1, 10 Nov 2026, *Draft for Review*, not approved). Also the review "pipeline-agus vs FSD v1.1" with decisions D-1..D-4 (11 Nov 2026). |
-| SQL | `../pipeline/sql/DWH_Retention_DB_Objects_v0.6.sql` and `../pipeline/sql/config/10_insert_retention_config.sql` v0.2 |
+| SQL | `../SQL_Script/deploy/01..05` (see `../SQL_Script/README.md`) and `../SQL_Script/config/10_insert_retention_config.sql` v0.2 |
 | Status | **Draft, not approved. Not imported or run in any Data Factory.** |
 | Difference from `pipeline/` | Uses the linked services that **already exist in the factory**, created by the user (decision D-2). Pipeline logic is identical. |
 
@@ -71,7 +71,7 @@ tools/            build_adf.py (generator), validate_adf.py, sql_contract.json (
 
 ## 5. Prerequisites
 
-1. SQL v0.6 is deployed and `config/10_insert_retention_config.sql` v0.2 has been run (`../pipeline/sql/README.md`).
+1. SQL v0.6 is deployed and `config/10_insert_retention_config.sql` v0.2 has been run (`../SQL_Script/README.md`).
 2. The login of `Agus_SqlServer_dwh` is a database user in role `ret_adf_executor` (`deploy/07_security_roles_TEMPLATE.sql`), including EXECUTE on `usp_GetRunArchiveFiles`.
 3. `ret.RetentionParameter.ArchiveContainer = 'dwh-archive'`, and the container exists in `stormsfsax01loc10dev`.
 4. `Agus_AzureBlobStorage1` may read, write, list and delete in `dwh-archive`.

@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - check of header (parent) / child table configuration
    -------------------------------------------------------------------------------------
-   Script  : pipeline/sql/monitoring/31_check_parent_child.sql   Version 0.1 (DRAFT, not executed)   24 November 2026
+   Script  : SQL_Script/monitoring/31_check_parent_child.sql   Version 0.1 (DRAFT, not executed)   24 November 2026
    Read-only (no data or configuration is changed). Requires SQL v0.6.
 
    Child table = RetentionConfig row with ParentTableConfigId (no own date column): its business date is the

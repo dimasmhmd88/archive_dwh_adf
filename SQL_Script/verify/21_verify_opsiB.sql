@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - check that the OPSI B objects are deployed (read-only)
    -------------------------------------------------------------------------------------
-   Script  : pipeline_opsi_B/sql/21_verify_opsiB.sql   Version 0.2 (DRAFT)   27 November 2026
+   Script  : SQL_Script/verify/21_verify_opsiB.sql   Version 0.2 (DRAFT)   27 November 2026
    0.2: checks of ChildDeleteMode (D-8, SQL v0.7.1-opsiB) and index check of child tables.
    Run after 20_OpsiB_DB_Objects.sql. Every row must show OK.
    ===================================================================================== */

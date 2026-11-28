@@ -2,7 +2,7 @@
    DWH Data Retention and Archiving - schema ret - 05_monitoring_views.sql
    Part of DWH_Retention_DB_Objects_v0.6.sql (DRAFT - not reviewed, not executed against any database).
    Monitoring views MQ-01..MQ-06 (section 9b, FSD 4.15 / 11.3)
-   Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
+   Deploy order: see SQL_Script/README.md. Run connected to the DWH database.
    ===================================================================================== */
 
 SET ANSI_NULLS ON;
