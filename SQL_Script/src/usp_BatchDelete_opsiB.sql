@@ -1,5 +1,5 @@
-/* opsi B source of ret.usp_BatchDelete (used by tools/make_sql_opsiB.py instead of pipeline/sql/deploy/04_procedures.sql).
-   Do not deploy this file on its own: deploy pipeline_opsi_B/sql/20_OpsiB_DB_Objects.sql. */
+/* opsi B source of ret.usp_BatchDelete (used by tools/make_sql_opsiB.py instead of SQL_Script/deploy/04_procedures.sql).
+   Do not deploy this file on its own: deploy SQL_Script/deploy/20_OpsiB_DB_Objects.sql. */
 /* 6.11 ret.usp_BatchDelete - batch delete of a validated range (BRQ-08, BR-08, FR-017).
         @TableLogId = log owning the validated range (current run, or an earlier run for a resume).
         Each batch: at most BatchSize rows plus the progress update in one short transaction, then
@@ -14,8 +14,8 @@
                     (KeySeq BETWEEN @SeqFrom AND @SeqTo); a batch below BatchSize moves to the next window.
                     The final recount still uses the header join (independent check, ERR-DEL-02).
           Missing column (opsi B rolled back) or a key column type that cannot be copied -> JOIN.
-        Source of this procedure for opsi B: pipeline_opsi_B/sql/src/usp_BatchDelete_opsiB.sql
-        (pipeline/sql/deploy/04_procedures.sql keeps the v0.6 text for the old packages). */
+        Source of this procedure for opsi B: SQL_Script/src/usp_BatchDelete_opsiB.sql
+        (SQL_Script/deploy/04_procedures.sql keeps the v0.6 text for the old packages). */
 CREATE OR ALTER PROCEDURE ret.usp_BatchDelete
     @RunId      BIGINT,
     @TableLogId BIGINT

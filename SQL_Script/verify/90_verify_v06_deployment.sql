@@ -1,8 +1,10 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - check that schema ret v0.6 is fully deployed
    -------------------------------------------------------------------------------------
-   Script  : test/90_verify_v06_deployment.sql      Version 0.2 (DRAFT)      21 November 2026 (v0.6.1 checks)
-   Read-only. Run after deploy/01..05. Every row of the result must show OK.
+   Script  : verify/90_verify_v06_deployment.sql      Version 0.3 (DRAFT)      28 November 2026
+   0.2: v0.6.1 checks. 0.3: procedure count 38 when the opsi B objects (deploy/20) are deployed;
+   explicit checks of fn_ParquetColumnName / vw_ParquetColumnMap / vw_MQ07_ArchiveFiles (patches 08 / 09).
+   Read-only. Run after deploy/01..05 (and 20). Every row of the result must show OK.
 
    Background: a database with the v0.6 tables and views but the v0.5 functions and procedures
    writes archive files in the old layout <BlobPath>/year=YYYY/month=MM/day=DD/<schema>_<table>_<yyyyMMdd>_<RunId>.parquet
@@ -15,15 +17,23 @@ SET NOCOUNT ON;
 IF OBJECT_ID(N'tempdb..#Check') IS NOT NULL DROP TABLE #Check;
 CREATE TABLE #Check (Ord INT IDENTITY(1, 1), CheckName NVARCHAR(200), Expected NVARCHAR(400), Actual NVARCHAR(400));
 
--- 1. Object counts (v0.6.2: 10 tables, 32 procedures, 10 functions, 8 views, 3 triggers)
+-- 1. Object counts (v0.6.2: 10 tables, 32 procedures - 38 with opsi B -, 10 functions, 8 views, 3 triggers)
 INSERT INTO #Check (CheckName, Expected, Actual)
 SELECT N'Object count ' + k.Kind, CONVERT(NVARCHAR(10), k.Expected), CONVERT(NVARCHAR(10), o.Cnt)
-FROM (VALUES (N'TABLE', 10), (N'PROCEDURE', 32), (N'FUNCTION', 10), (N'VIEW', 8), (N'TRIGGER', 3)) AS k (Kind, Expected)
+FROM (VALUES (N'TABLE', 10),
+             (N'PROCEDURE', CASE WHEN OBJECT_ID(N'ret.usp_GetExportChunk', N'P') IS NULL THEN 32 ELSE 38 END),
+             (N'FUNCTION', 10), (N'VIEW', 8), (N'TRIGGER', 3)) AS k (Kind, Expected)
 CROSS APPLY (SELECT COUNT(*) AS Cnt FROM sys.objects AS so
              WHERE so.schema_id = SCHEMA_ID(N'ret')
                AND CASE WHEN so.type = 'U' THEN N'TABLE' WHEN so.type = 'P' THEN N'PROCEDURE'
                         WHEN so.type IN ('FN', 'IF', 'TF') THEN N'FUNCTION' WHEN so.type = 'V' THEN N'VIEW'
                         WHEN so.type = 'TR' THEN N'TRIGGER' END = k.Kind) AS o;
+
+-- 1b. Objects of patch v0.6.1 (deploy/08, D-6) and v0.6.2 (deploy/09)
+INSERT INTO #Check (CheckName, Expected, Actual)
+SELECT N'Object ' + n.Name + N' (' + n.Patch + N')', N'exists', CASE WHEN OBJECT_ID(n.Name) IS NULL THEN N'missing' ELSE N'exists' END
+FROM (VALUES (N'ret.fn_ParquetColumnName', N'deploy/08'), (N'ret.vw_ParquetColumnMap', N'deploy/08'),
+             (N'ret.vw_MQ07_ArchiveFiles', N'deploy/09')) AS n (Name, Patch);
 
 -- 2. Archive layout functions (MD-07). v0.5 fn_ArchiveFileName has 4 parameters.
 INSERT INTO #Check (CheckName, Expected, Actual)
@@ -79,7 +89,7 @@ SELECT N'BlobPath values not lower-case <schema>.<table>', N'0', CONVERT(NVARCHA
 FROM ret.RetentionConfig
 WHERE BlobPath COLLATE Latin1_General_100_BIN2 <> LOWER(SchemaName + N'.' + TableName) COLLATE Latin1_General_100_BIN2;
 
--- 5. Archive inventory written with the old layout (needs manual clean-up, see pipeline/sql/README.md)
+-- 5. Archive inventory written with the old layout (needs manual clean-up, see SQL_Script/README.md)
 INSERT INTO #Check (CheckName, Expected, Actual)
 SELECT N'RetentionArchiveDate rows with old layout (not REMOVED)', N'0', CONVERT(NVARCHAR(10), COUNT(*))
 FROM ret.RetentionArchiveDate

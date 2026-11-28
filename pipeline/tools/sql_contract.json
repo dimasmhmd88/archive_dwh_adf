@@ -1,5 +1,5 @@
 {
- "_source": "Transcribed from pipeline/sql/DWH_Retention_DB_Objects_v0.6.sql (procedure parameter lists and final SELECT columns); v0.6 changes: usp_GetExpiredArchiveFolders (YEAR/FILE), new usp_GetRunArchiveFiles",
+ "_source": "Transcribed from SQL v0.6 (now SQL_Script/deploy/01..05) (procedure parameter lists and final SELECT columns); v0.6 changes: usp_GetExpiredArchiveFolders (YEAR/FILE), new usp_GetRunArchiveFiles",
  "ret.usp_StartRun": {
   "required": [
    "ProcessType"

@@ -2,7 +2,7 @@
    DWH Data Retention and Archiving - schema ret - 06_reference_examples_monitoring.sql
    Part of DWH_Retention_DB_Objects_v0.6.sql (DRAFT - not reviewed, not executed against any database).
    COMMENTED OUT: example configuration, example calls, monitoring queries (sections 10-12)
-   Deploy order: see pipeline/sql/README.md. Run connected to the DWH database.
+   Deploy order: see SQL_Script/README.md. Run connected to the DWH database.
    ===================================================================================== */
 
 SET ANSI_NULLS ON;

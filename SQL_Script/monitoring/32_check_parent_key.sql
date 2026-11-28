@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - check of ret.RetentionParentKey (join keys child -> header)
    -------------------------------------------------------------------------------------
-   Script  : pipeline/sql/monitoring/32_check_parent_key.sql   Version 0.1 (DRAFT, not executed)   24 November 2026
+   Script  : SQL_Script/monitoring/32_check_parent_key.sql   Version 0.1 (DRAFT, not executed)   24 November 2026
    Read-only (no data or configuration is changed). Requires SQL v0.6.
 
    ret.RetentionParentKey holds, per child table (RetentionConfig.ParentTableConfigId filled), the columns that join

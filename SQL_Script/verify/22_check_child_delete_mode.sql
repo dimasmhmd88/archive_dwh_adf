@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - check of the child delete mode KEY_TABLE (read-only, D-8)
    -------------------------------------------------------------------------------------
-   Script  : pipeline_opsi_B/sql/22_check_child_delete_mode.sql   Version 0.1 (DRAFT)   27 November 2026
+   Script  : SQL_Script/verify/22_check_child_delete_mode.sql   Version 0.1 (DRAFT)   27 November 2026
    Requires: 20_OpsiB_DB_Objects.sql v0.7.1-opsiB
    Purpose : before switching ChildDeleteMode to KEY_TABLE (and after a run), prove for ONE child table that
              both methods select the same child rows for a cut-off:

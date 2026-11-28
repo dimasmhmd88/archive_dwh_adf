@@ -2,7 +2,7 @@
    DWH Data Retention and Archiving - register TEST tables in ret.RetentionConfig
    -------------------------------------------------------------------------------------
    Script  : test/92_insert_test_table_config.sql   Version 0.2 (DRAFT)      16 November 2026
-   Requires: schema ret v0.6 (test/90_verify_v06_deployment.sql all OK)
+   Requires: schema ret v0.6 (verify/90_verify_v06_deployment.sql all OK)
    Use     : DEV / TEST databases. For production tables use config/10_insert_retention_config.sql.
 
    What it does (one transaction, re-runnable)

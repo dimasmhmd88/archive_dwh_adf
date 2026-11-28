@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - schema ret - PATCH v0.6.1 (decision D-6)
    -------------------------------------------------------------------------------------
-   Script   : pipeline/sql/deploy/08_patch_v0.6.1_parquet_column_names.sql
+   Script   : SQL_Script/deploy/08_patch_v0.6.1_parquet_column_names.sql
    Version  : 0.6.1 (DRAFT - not reviewed, not executed against any database)
    Date     : 21 November 2026
    Decision : D-6 (user, 21 Nov 2026): column names that Parquet rejects (white space and , ; { } ( ) =)
@@ -12,7 +12,7 @@
               ret.usp_ExportSourceRows (aliases), ret.usp_BeginTable (V-08: types + unique renamed names)
    Apply to : databases with SQL v0.6 (deploy/01..05 already run). New deployments: deploy/03..05 already
               contain the change; this patch is not needed.
-   OPSI B   : if pipeline_opsi_B/sql/20_OpsiB_DB_Objects.sql was deployed, run it AGAIN after this patch
+   OPSI B   : if SQL_Script/deploy/20_OpsiB_DB_Objects.sql was deployed, run it AGAIN after this patch
               (it contains usp_BeginTable with the #RetOut_ option); check with 21_verify_opsiB.sql.
    ===================================================================================== */
 

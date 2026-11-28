@@ -1,5 +1,5 @@
 {
-  "_source": "Transcribed from pipeline/sql/DWH_Retention_DB_Objects_v0.6.sql plus pipeline_opsi_B/sql/20_OpsiB_DB_Objects.sql (SQL v0.7-opsiB: new wrapper procedures).",
+  "_source": "Transcribed from SQL v0.6 (now SQL_Script/deploy/01..05) plus SQL_Script/deploy/20_OpsiB_DB_Objects.sql (SQL v0.7-opsiB: new wrapper procedures).",
   "ret.usp_StartRun": {
     "required": [
       "ProcessType"

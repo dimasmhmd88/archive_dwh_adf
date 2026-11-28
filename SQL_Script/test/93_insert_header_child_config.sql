@@ -1,7 +1,7 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - register a HEADER table and its CHILD (detail) table
    -------------------------------------------------------------------------------------
-   Script  : pipeline/sql/test/93_insert_header_child_config.sql   Version 0.1 (DRAFT, not executed)   26 November 2026
+   Script  : SQL_Script/test/93_insert_header_child_config.sql   Version 0.1 (DRAFT, not executed)   26 November 2026
    Example : header bos.BOS_SD_FDo (date column dtmDelivery)  <-  child bos.BOS_SD_FDoItem (join key szdoId)
              (values from List Table DWH.xlsx as used in config v0.1; check them with block 1)
    Requires: SQL v0.6 or later.
