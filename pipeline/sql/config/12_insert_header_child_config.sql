@@ -1,10 +1,13 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - register HEADER + CHILD (detail) tables
    -------------------------------------------------------------------------------------
-   Script   : config/12_insert_header_child_config.sql   Version 0.1 (DRAFT - not executed against any database)
+   Script   : config/12_insert_header_child_config.sql   Version 0.2 (DRAFT - not executed against any database)
    Date     : 28 November 2026
+   History  : 0.1  lists @Pair / @Keys
+              0.2  parameters: @HdrSchema, @HdrTable, @HdrDateColumn, @ChdSchema, @ChdTable, @ChildKeyColumns,
+                   @ParentKeyColumns (one header + one child per execution)
    Requires : schema ret v0.6.1 (deploy/01..05 + 08)
-   Scope    : one or more header tables, each with one or more child tables. A child table has NO own date
+   Scope    : one header table and one child table per execution (parameters below). A child table has NO own date
               column: its business date is the date of the header row found through the join keys
               (ret.RetentionParentKey, FR-023). Own-dated tables only: config/11_insert_table_config.sql.
 
@@ -36,30 +39,51 @@ SET NOCOUNT ON;
 SET XACT_ABORT ON;
 
 /* -------------------------------------------------------------------------------------
-   Settings - change here only
+   PARAMETERS - change here only (one header + one child per execution;
+   a second child of the same header: run the script again with the other child)
    ------------------------------------------------------------------------------------- */
-DECLARE @Apply     BIT      = 0;        -- 0 = preview, 1 = insert / align
-DECLARE @IsActive  BIT      = 1;        -- MD-05: 0 = registered but not processed
-DECLARE @DwhYears  SMALLINT = 3;        -- same for header and child (DBR-20)
-DECLARE @BlobYears SMALLINT = 5;
-DECLARE @LogYears  SMALLINT = 3;
+DECLARE @Apply            BIT           = 0;                -- 0 = preview, 1 = insert / align
 
--- one row per CHILD table (repeat the header for a second child of the same header)
+-- header table (own date column)
+DECLARE @HdrSchema        SYSNAME       = N'schema1';
+DECLARE @HdrTable         SYSNAME       = N'HeaderTable1';
+DECLARE @HdrDateColumn    SYSNAME       = N'HeaderDate';     -- business date of header AND child rows
+
+-- child (detail) table
+DECLARE @ChdSchema        SYSNAME       = N'schema1';
+DECLARE @ChdTable         SYSNAME       = N'DetailTable1';
+
+-- join keys: column names separated by commas, same order in both lists (composite key: N'DocNo,Branch')
+DECLARE @ChildKeyColumns  NVARCHAR(MAX) = N'HeaderId';       -- columns of the child table
+DECLARE @ParentKeyColumns NVARCHAR(MAX) = N'HeaderId';       -- matching columns of the header table
+
+-- optional
+DECLARE @HdrSize          VARCHAR(10)   = NULL;              -- NULL = from used space (SMALL <= 500 MB, MEDIUM <= 5 GB, LARGE)
+DECLARE @ChdSize          VARCHAR(10)   = NULL;
+DECLARE @HdrMethod        VARCHAR(20)   = NULL;              -- NULL = by size (LARGE -> TABLE_REBUILD, else BATCH_DELETE)
+DECLARE @ChdMethod        VARCHAR(20)   = NULL;
+DECLARE @IsActive         BIT           = 1;                 -- MD-05: 0 = registered but not processed
+DECLARE @DwhYears         SMALLINT      = 3;                 -- same for header and child (DBR-20)
+DECLARE @BlobYears        SMALLINT      = 5;
+DECLARE @LogYears         SMALLINT      = 3;
+
+/* -------------------------------------------------------------------------------------
+   Parameters -> work tables (do not change below this line)
+   ------------------------------------------------------------------------------------- */
 DECLARE @Pair TABLE
 (
     HdrSchema       SYSNAME     NOT NULL,
     HdrTable        SYSNAME     NOT NULL,
-    HdrDateColumn   SYSNAME     NOT NULL,       -- business date of header AND child rows
+    HdrDateColumn   SYSNAME     NOT NULL,
     ChdSchema       SYSNAME     NOT NULL,
     ChdTable        SYSNAME     NOT NULL,
-    HdrSize         VARCHAR(10) NULL,           -- NULL = from used space (SMALL <= 500 MB, MEDIUM <= 5 GB, LARGE)
+    HdrSize         VARCHAR(10) NULL,
     ChdSize         VARCHAR(10) NULL,
-    HdrMethod       VARCHAR(20) NULL,           -- NULL = by size (LARGE -> TABLE_REBUILD, else BATCH_DELETE)
+    HdrMethod       VARCHAR(20) NULL,
     ChdMethod       VARCHAR(20) NULL,
     PRIMARY KEY (ChdSchema, ChdTable)
 );
 
--- join keys per child: KeyOrdinal 1..n (composite key = several rows)
 DECLARE @Keys TABLE
 (
     ChdSchema       SYSNAME     NOT NULL,
@@ -70,19 +94,43 @@ DECLARE @Keys TABLE
     PRIMARY KEY (ChdSchema, ChdTable, KeyOrdinal)
 );
 
--- <== header / child pairs
-INSERT INTO @Pair (HdrSchema, HdrTable, HdrDateColumn, ChdSchema, ChdTable)
-VALUES
-    (N'schema1', N'HeaderTable1', N'HeaderDate', N'schema1', N'DetailTable1');
---  , (N'schema1', N'HeaderTable1', N'HeaderDate', N'schema1', N'DetailTable1b')    -- second child of the same header
---  , (N'schema2', N'HeaderTable2', N'TransDate',  N'schema2', N'DetailTable2')
+INSERT INTO @Pair (HdrSchema, HdrTable, HdrDateColumn, ChdSchema, ChdTable, HdrSize, ChdSize, HdrMethod, ChdMethod)
+VALUES (LTRIM(RTRIM(@HdrSchema)), LTRIM(RTRIM(@HdrTable)), LTRIM(RTRIM(@HdrDateColumn)),
+        LTRIM(RTRIM(@ChdSchema)), LTRIM(RTRIM(@ChdTable)), @HdrSize, @ChdSize, @HdrMethod, @ChdMethod);
 
--- <== join keys (child column = header column)
+-- split the key lists with their position (OPENJSON keeps the order: [key] = 0, 1, ...)
+DECLARE @ChildKeys TABLE (Ord INT PRIMARY KEY, Col SYSNAME NULL);
+DECLARE @ParentKeys TABLE (Ord INT PRIMARY KEY, Col SYSNAME NULL);
+INSERT INTO @ChildKeys (Ord, Col)
+SELECT CONVERT(INT, j.[key]) + 1, NULLIF(LTRIM(RTRIM(j.[value])), N'')
+FROM OPENJSON(N'["' + REPLACE(STRING_ESCAPE(ISNULL(@ChildKeyColumns, N''), 'json'), N',', N'","') + N'"]') AS j;
+INSERT INTO @ParentKeys (Ord, Col)
+SELECT CONVERT(INT, j.[key]) + 1, NULLIF(LTRIM(RTRIM(j.[value])), N'')
+FROM OPENJSON(N'["' + REPLACE(STRING_ESCAPE(ISNULL(@ParentKeyColumns, N''), 'json'), N',', N'","') + N'"]') AS j;
+
+IF EXISTS (SELECT 1 FROM @ChildKeys WHERE Col IS NULL) OR EXISTS (SELECT 1 FROM @ParentKeys WHERE Col IS NULL)
+BEGIN
+    ;THROW 50983, N'@ChildKeyColumns / @ParentKeyColumns: empty column name (check the commas).', 1;
+END;
+IF (SELECT COUNT(*) FROM @ChildKeys) <> (SELECT COUNT(*) FROM @ParentKeys)
+BEGIN
+    ;THROW 50984, N'@ChildKeyColumns and @ParentKeyColumns must have the same number of columns.', 1;
+END;
+IF EXISTS (SELECT Col FROM @ChildKeys GROUP BY Col HAVING COUNT(*) > 1)
+   OR EXISTS (SELECT Col FROM @ParentKeys GROUP BY Col HAVING COUNT(*) > 1)
+BEGIN
+    ;THROW 50986, N'@ChildKeyColumns / @ParentKeyColumns: a column is listed twice.', 1;
+END;
+IF (SELECT COUNT(*) FROM @ChildKeys) > 16
+BEGIN
+    ;THROW 50985, N'More than 16 join key columns.', 1;
+END;
+
 INSERT INTO @Keys (ChdSchema, ChdTable, KeyOrdinal, ChildColumn, ParentColumn)
-VALUES
-    (N'schema1', N'DetailTable1', 1, N'HeaderId', N'HeaderId');
---  , (N'schema2', N'DetailTable2', 1, N'DocNo',  N'DocNo')
---  , (N'schema2', N'DetailTable2', 2, N'Branch', N'Branch')                        -- composite key
+SELECT p.ChdSchema, p.ChdTable, c.Ord, c.Col, h.Col
+FROM @Pair AS p
+CROSS JOIN @ChildKeys AS c
+JOIN @ParentKeys AS h ON h.Ord = c.Ord;
 
 /* -------------------------------------------------------------------------------------
    0. Prerequisites
