@@ -1,8 +1,12 @@
 /* =====================================================================================
    DWH Data Retention and Archiving - register OWN-DATED tables (no header / parent key)
    -------------------------------------------------------------------------------------
-   Script   : config/11_insert_table_config.sql   Version 0.1 (DRAFT - not executed against any database)
+   Script   : config/11_insert_table_config.sql   Version 0.2 (DRAFT - not executed against any database)
    Date     : 28 November 2026
+   History  : 0.1  initial version
+              0.2  InitialCutoffMethod from the size category: SMALL / MEDIUM -> BATCH_DELETE, LARGE -> TABLE_REBUILD
+                   (NULL in @List = this rule; an explicit value overrides it and is reported); RB-01 preview of
+                   features that block a table rebuild
    Requires : schema ret v0.6.1 (deploy/01..05 + 08), opsi B objects optional (ExportParallelism)
    Scope    : tables with their OWN retention column (ParentTableConfigId NULL, no ret.RetentionParentKey rows).
               Child tables (date from a header table): test/93_insert_header_child_config.sql.
@@ -18,6 +22,9 @@
           plus: method, size category, ExportParallelism 1..16, the table is not configured as a child,
           header of child tables: retention years must stay equal to the children (DBR-20).
      2. SizeCategory from the used space when NULL: SMALL <= 500 MB, MEDIUM <= 5 GB, LARGE > 5 GB.
+        InitialCutoffMethod when NULL: SMALL / MEDIUM -> BATCH_DELETE, LARGE -> TABLE_REBUILD.
+        TABLE_REBUILD: the features that make usp_TableRebuildPrepare refuse the rebuild (RB-01, ERR-RBD-04)
+        are listed in the column RebuildBlockers (warning only; the table is still registered).
      3. New table   -> INSERT (status row PENDING is created by trigger trg_RetentionConfig_AfterInsert).
         Registered  -> UPDATE of column, years, BlobPath, method, size, IsActive, ExportParallelism, only while
                        the Initial Cut-off status is PENDING and no archive file exists; otherwise not changed.
@@ -46,7 +53,8 @@ DECLARE @List TABLE
     TableName           SYSNAME         NOT NULL,
     RetentionColumn     SYSNAME         NOT NULL,
     SizeCategory        VARCHAR(10)     NULL,                               -- NULL = from used space
-    InitialCutoffMethod VARCHAR(20)     NOT NULL DEFAULT ('BATCH_DELETE'),  -- BATCH_DELETE / TABLE_REBUILD
+    InitialCutoffMethod VARCHAR(20)     NULL,                               -- NULL = by size: SMALL / MEDIUM BATCH_DELETE,
+                                                                            --        LARGE TABLE_REBUILD
     DwhRetentionYears   SMALLINT        NOT NULL DEFAULT (3),
     BlobRetentionYears  SMALLINT        NOT NULL DEFAULT (5),
     LogRetentionYears   SMALLINT        NOT NULL DEFAULT (3),
@@ -84,7 +92,8 @@ DECLARE @HasExportPar BIT = CASE WHEN COL_LENGTH(N'ret.RetentionConfig', N'Expor
 IF OBJECT_ID(N'tempdb..#Chk') IS NOT NULL DROP TABLE #Chk;
 CREATE TABLE #Chk
 (
-    SchemaName SYSNAME, TableName SYSNAME, RetentionColumn SYSNAME, InitialCutoffMethod VARCHAR(20),
+    SchemaName SYSNAME, TableName SYSNAME, RetentionColumn SYSNAME, InitialCutoffMethod VARCHAR(20) NULL,
+    MethodSource VARCHAR(10) NULL, RebuildBlockers NVARCHAR(MAX) NULL,
     DwhRetentionYears SMALLINT, BlobRetentionYears SMALLINT, LogRetentionYears SMALLINT, ExportParallelism TINYINT NULL,
     ObjectId INT NULL, ColumnType SYSNAME NULL, ColumnNullable BIT NULL, HasDateIndex BIT NULL,
     UsedSpaceMB DECIMAL(18, 2) NULL, SizeCategory VARCHAR(10) NULL, BlobPath NVARCHAR(400), NullDates BIGINT NULL,
@@ -93,15 +102,16 @@ CREATE TABLE #Chk
     HasArchiveFiles BIT NOT NULL DEFAULT (0), ChildYearsMismatch NVARCHAR(400) NULL, Problem NVARCHAR(400) NULL
 );
 
-INSERT INTO #Chk (SchemaName, TableName, RetentionColumn, InitialCutoffMethod, DwhRetentionYears, BlobRetentionYears,
+INSERT INTO #Chk (SchemaName, TableName, RetentionColumn, InitialCutoffMethod, MethodSource, DwhRetentionYears, BlobRetentionYears,
                   LogRetentionYears, ExportParallelism, ObjectId, ColumnType, ColumnNullable, UsedSpaceMB, SizeCategory, BlobPath)
-SELECT l.SchemaName, l.TableName, l.RetentionColumn, l.InitialCutoffMethod, l.DwhRetentionYears, l.BlobRetentionYears,
-       l.LogRetentionYears, l.ExportParallelism,
+SELECT l.SchemaName, l.TableName, l.RetentionColumn,
+       ISNULL(l.InitialCutoffMethod, CASE cat.SizeCategory WHEN 'LARGE' THEN 'TABLE_REBUILD'
+                                                           WHEN 'SMALL' THEN 'BATCH_DELETE' WHEN 'MEDIUM' THEN 'BATCH_DELETE' END),
+       CASE WHEN l.InitialCutoffMethod IS NULL THEN 'BY_SIZE' ELSE 'MANUAL' END,
+       l.DwhRetentionYears, l.BlobRetentionYears, l.LogRetentionYears, l.ExportParallelism,
        o.object_id, TYPE_NAME(c.system_type_id), c.is_nullable,
        CAST(sz.UsedPages * 8 / 1024.0 AS DECIMAL(18, 2)),
-       ISNULL(l.SizeCategory, CASE WHEN o.object_id IS NULL THEN NULL
-                                   WHEN sz.UsedPages * 8 / 1024.0 <= 500  THEN 'SMALL'
-                                   WHEN sz.UsedPages * 8 / 1024.0 <= 5120 THEN 'MEDIUM' ELSE 'LARGE' END),
+       cat.SizeCategory,
        ISNULL(l.BlobPath, LOWER(l.SchemaName + N'.' + l.TableName))
 FROM @List AS l
 LEFT JOIN sys.tables AS o ON o.object_id = OBJECT_ID(QUOTENAME(l.SchemaName) + N'.' + QUOTENAME(l.TableName))
@@ -111,7 +121,76 @@ OUTER APPLY (SELECT ISNULL(SUM(CONVERT(BIGINT, au.used_pages)), 0) AS UsedPages
              FROM sys.partitions AS p
              JOIN sys.allocation_units AS au
                ON au.container_id = CASE WHEN au.type IN (1, 3) THEN p.hobt_id ELSE p.partition_id END
-             WHERE p.object_id = o.object_id) AS sz;
+             WHERE p.object_id = o.object_id) AS sz
+CROSS APPLY (SELECT ISNULL(l.SizeCategory, CASE WHEN o.object_id IS NULL THEN NULL
+                                                WHEN sz.UsedPages * 8 / 1024.0 <= 500  THEN 'SMALL'
+                                                WHEN sz.UsedPages * 8 / 1024.0 <= 5120 THEN 'MEDIUM' ELSE 'LARGE' END) AS SizeCategory) AS cat;
+
+-- RB-01 preview for TABLE_REBUILD (same list as ret.usp_TableRebuildPrepare; the run refuses with ERR-RBD-04)
+UPDATE k
+   SET RebuildBlockers = (
+        SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), x.Reason) COLLATE DATABASE_DEFAULT, N'; ')
+        FROM (
+            SELECT CONCAT(N'referenced by foreign key ', QUOTENAME(fk.name COLLATE DATABASE_DEFAULT), N' of ',
+                          QUOTENAME(OBJECT_SCHEMA_NAME(fk.parent_object_id)), N'.', QUOTENAME(OBJECT_NAME(fk.parent_object_id))) AS Reason
+            FROM sys.foreign_keys AS fk WHERE fk.referenced_object_id = k.ObjectId
+            UNION ALL
+            SELECT CONCAT(N'referenced by schema-bound module ', QUOTENAME(OBJECT_SCHEMA_NAME(m.object_id)), N'.', QUOTENAME(OBJECT_NAME(m.object_id)))
+            FROM sys.sql_expression_dependencies AS d JOIN sys.sql_modules AS m ON m.object_id = d.referencing_id
+            WHERE d.referenced_id = k.ObjectId AND m.is_schema_bound = 1
+            UNION ALL
+            SELECT N'system-versioned temporal or history table' FROM sys.tables AS t WHERE t.object_id = k.ObjectId AND t.temporal_type <> 0
+            UNION ALL
+            SELECT N'memory-optimized table' FROM sys.tables AS t WHERE t.object_id = k.ObjectId AND t.is_memory_optimized = 1
+            UNION ALL
+            SELECT N'graph table' FROM sys.tables AS t WHERE t.object_id = k.ObjectId AND (t.is_node = 1 OR t.is_edge = 1)
+            UNION ALL
+            SELECT N'ledger table' FROM sys.tables AS t WHERE t.object_id = k.ObjectId AND t.ledger_type <> 0
+            UNION ALL
+            SELECT N'tracked by change data capture' FROM sys.tables AS t WHERE t.object_id = k.ObjectId AND t.is_tracked_by_cdc = 1
+            UNION ALL
+            SELECT N'change tracking enabled' FROM sys.change_tracking_tables AS ct WHERE ct.object_id = k.ObjectId
+            UNION ALL
+            SELECT N'replicated table' FROM sys.tables AS t WHERE t.object_id = k.ObjectId AND (t.is_replicated = 1 OR t.is_merge_published = 1)
+            UNION ALL
+            SELECT DISTINCT N'partitioned table' FROM sys.indexes AS i JOIN sys.data_spaces AS ds ON ds.data_space_id = i.data_space_id
+            WHERE i.object_id = k.ObjectId AND ds.type = 'PS'
+            UNION ALL
+            SELECT CONCAT(N'rowversion column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c
+            WHERE c.object_id = k.ObjectId AND TYPE_NAME(c.system_type_id) = 'timestamp'
+            UNION ALL
+            SELECT CONCAT(N'GENERATED ALWAYS column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c
+            WHERE c.object_id = k.ObjectId AND c.generated_always_type <> 0
+            UNION ALL
+            SELECT CONCAT(N'sparse column or column set ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c
+            WHERE c.object_id = k.ObjectId AND (c.is_sparse = 1 OR c.is_column_set = 1)
+            UNION ALL
+            SELECT CONCAT(N'masked column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c
+            WHERE c.object_id = k.ObjectId AND c.is_masked = 1
+            UNION ALL
+            SELECT CONCAT(N'encrypted column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c
+            WHERE c.object_id = k.ObjectId AND c.encryption_type IS NOT NULL
+            UNION ALL
+            SELECT CONCAT(N'typed xml column ', QUOTENAME(c.name COLLATE DATABASE_DEFAULT)) FROM sys.columns AS c
+            WHERE c.object_id = k.ObjectId AND c.xml_collection_id <> 0
+            UNION ALL
+            SELECT CONCAT(N'index type ', i.type_desc COLLATE DATABASE_DEFAULT, N' ', QUOTENAME(i.name COLLATE DATABASE_DEFAULT)) FROM sys.indexes AS i
+            WHERE i.object_id = k.ObjectId AND i.type NOT IN (0, 1, 2)
+            UNION ALL
+            SELECT N'full-text index' FROM sys.fulltext_indexes AS f WHERE f.object_id = k.ObjectId
+            UNION ALL
+            SELECT CONCAT(N'trigger without readable definition ', QUOTENAME(tr.name COLLATE DATABASE_DEFAULT))
+            FROM sys.triggers AS tr LEFT JOIN sys.sql_modules AS m ON m.object_id = tr.object_id
+            WHERE tr.parent_id = k.ObjectId AND m.definition COLLATE DATABASE_DEFAULT IS NULL
+            UNION ALL
+            SELECT CONCAT(N'NOT FOR REPLICATION constraint ', QUOTENAME(ck.name COLLATE DATABASE_DEFAULT)) FROM sys.check_constraints AS ck
+            WHERE ck.parent_object_id = k.ObjectId AND ck.is_not_for_replication = 1
+            UNION ALL
+            SELECT CONCAT(N'NOT FOR REPLICATION constraint ', QUOTENAME(fk.name COLLATE DATABASE_DEFAULT)) FROM sys.foreign_keys AS fk
+            WHERE fk.parent_object_id = k.ObjectId AND fk.is_not_for_replication = 1
+        ) AS x)
+  FROM #Chk AS k
+ WHERE k.ObjectId IS NOT NULL AND k.InitialCutoffMethod = 'TABLE_REBUILD';
 
 -- index with the retention column as first key column (information)
 UPDATE k
@@ -188,7 +267,7 @@ UPDATE k
              THEN N'V-06: BlobPath ' + k.BlobPath + N' already used by another table'
         WHEN k.BadTypes IS NOT NULL THEN LEFT(N'V-08: column types not supported for Parquet: ' + k.BadTypes, 400)
         WHEN k.DupParquetNames IS NOT NULL THEN LEFT(N'V-08: Parquet column names not unique after renaming: ' + k.DupParquetNames, 400)
-        WHEN k.InitialCutoffMethod NOT IN ('BATCH_DELETE', 'TABLE_REBUILD') THEN N'Invalid InitialCutoffMethod'
+        WHEN ISNULL(k.InitialCutoffMethod, '') NOT IN ('BATCH_DELETE', 'TABLE_REBUILD') THEN N'Invalid InitialCutoffMethod'
         WHEN k.SizeCategory NOT IN ('SMALL', 'MEDIUM', 'LARGE') THEN N'Invalid SizeCategory'
         WHEN k.ExportParallelism IS NOT NULL AND @HasExportPar = 0 THEN N'ExportParallelism given but opsi B column not deployed'
         WHEN k.ExportParallelism IS NOT NULL AND k.ExportParallelism NOT BETWEEN 1 AND 16 THEN N'ExportParallelism must be 1..16'
@@ -204,13 +283,20 @@ UPDATE k
   FROM #Chk AS k;
 
 SELECT k.SchemaName, k.TableName, k.RetentionColumn, k.ColumnType, k.UsedSpaceMB, k.SizeCategory, k.InitialCutoffMethod,
+       k.MethodSource, k.RebuildBlockers,
        k.DwhRetentionYears, k.BlobRetentionYears, k.LogRetentionYears, k.BlobPath, k.ExportParallelism,
        k.NullDates, k.HasDateIndex, k.ExistingConfigId, k.ExistingStatus,
        CASE WHEN k.Problem IS NOT NULL THEN N'NOT APPLIED: ' + k.Problem
             WHEN k.ExistingConfigId IS NULL THEN N'INSERT'
             ELSE N'UPDATE (status PENDING, no archive file)' END AS Action,
        CASE WHEN k.SizeCategory = 'LARGE' THEN N'LARGE: needs DowntimeReference; runs after all SMALL / MEDIUM are COMPLETED. ' ELSE N'' END
-       + CASE WHEN k.HasDateIndex = 0 AND k.SizeCategory IN ('MEDIUM', 'LARGE') THEN N'No index on the retention column.' ELSE N'' END AS Note
+       + CASE WHEN k.HasDateIndex = 0 AND k.SizeCategory IN ('MEDIUM', 'LARGE') THEN N'No index on the retention column. ' ELSE N'' END
+       + CASE WHEN k.MethodSource = 'MANUAL'
+                   AND k.InitialCutoffMethod <> CASE k.SizeCategory WHEN 'LARGE' THEN 'TABLE_REBUILD' ELSE 'BATCH_DELETE' END
+              THEN N'Method set manually, differs from the size rule. ' ELSE N'' END
+       + CASE WHEN k.RebuildBlockers IS NOT NULL
+              THEN N'TABLE_REBUILD will be refused (RB-01, ERR-RBD-04): see RebuildBlockers; set InitialCutoffMethod = ''BATCH_DELETE'' for this table or remove the blocker. '
+              ELSE N'' END AS Note
 FROM #Chk AS k
 ORDER BY k.SchemaName, k.TableName;
 
